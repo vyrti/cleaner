@@ -1,0 +1,44 @@
+[package]
+name = "cleaner"
+version = "0.1.0"
+edition = "2021"
+description = "High-performance folder cleaner for development temp files"
+license = "Apache-2.0"
+
+[dependencies]
+# CLI parsing
+clap = { version = "4", features = ["derive"] }
+
+# Parallel filesystem walking
+jwalk = "0.8"
+
+# Data parallelism for deletions
+rayon = "1.11"
+
+# Lock-free channels for producer-consumer
+crossbeam-channel = "0.5"
+
+# SIMD-accelerated byte searching
+memchr = "2"
+
+# Progress indicators
+indicatif = "0.18"
+
+# Human-readable byte sizes
+humansize = "2"
+
+# Colored terminal output
+colored = "3"
+
+# CPU detection
+num_cpus = "1.17"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+opt-level = 3
+
+[profile.release.build-override]
+opt-level = 3
