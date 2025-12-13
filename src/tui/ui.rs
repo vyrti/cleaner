@@ -85,7 +85,9 @@ fn render_list(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_footer(f: &mut Frame, app: &App, area: Rect) {
-    let text = if app.confirm_delete {
+    let text = if app.is_deleting() {
+        " ⏳ Deleting... please wait".to_string()
+    } else if app.confirm_delete {
         if let Some(entry) = app.selected_entry() {
             format!(
                 " Delete '{}'? (y/n) - {} will be freed",

@@ -134,26 +134,33 @@ pub fn run(root: PathBuf, config: Arc<Config>) -> io::Result<()> {
 
 fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
     loop {
+        // Clear expired status messages
+        app.tick();
+
         terminal.draw(|f| ui::render(f, app))?;
 
-        if let Event::Key(key) = event::read()? {
-            if key.kind == KeyEventKind::Press {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                    KeyCode::Up | KeyCode::Char('k') => app.move_up(),
-                    KeyCode::Down | KeyCode::Char('j') => app.move_down(),
-                    KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => app.enter(),
-                    KeyCode::Left | KeyCode::Backspace | KeyCode::Char('h') => app.go_back(),
-                    KeyCode::Char('d') => app.toggle_delete_confirm(),
-                    KeyCode::Char('y') if app.confirm_delete => app.delete_selected(),
-                    KeyCode::Char('n') if app.confirm_delete => app.confirm_delete = false,
-                    KeyCode::Char('s') => app.toggle_sort(),
-                    KeyCode::Char('r') => app.refresh(),
-                    KeyCode::Home | KeyCode::Char('g') => app.go_top(),
-                    KeyCode::End | KeyCode::Char('G') => app.go_bottom(),
-                    _ => {}
+        // Non-blocking poll so UI stays responsive
+        if event::poll(Duration::from_millis(100))? {
+            if let Event::Key(key) = event::read()? {
+                if key.kind == KeyEventKind::Press {
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                        KeyCode::Up | KeyCode::Char('k') => app.move_up(),
+                        KeyCode::Down | KeyCode::Char('j') => app.move_down(),
+                        KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => app.enter(),
+                        KeyCode::Left | KeyCode::Backspace | KeyCode::Char('h') => app.go_back(),
+                        KeyCode::Char('d') => app.toggle_delete_confirm(),
+                        KeyCode::Char('y') if app.confirm_delete => app.delete_selected(),
+                        KeyCode::Char('n') if app.confirm_delete => app.confirm_delete = false,
+                        KeyCode::Char('s') => app.toggle_sort(),
+                        KeyCode::Char('r') => app.refresh(),
+                        KeyCode::Home | KeyCode::Char('g') => app.go_top(),
+                        KeyCode::End | KeyCode::Char('G') => app.go_bottom(),
+                        _ => {}
+                    }
                 }
             }
         }
     }
 }
+
