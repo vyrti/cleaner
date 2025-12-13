@@ -2,11 +2,9 @@
 
 use super::tree::{self, DirEntry, DirTree};
 use crate::patterns::PatternMatcher;
-use jwalk::WalkDir;
-use rayon::prelude::*;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
@@ -245,44 +243,11 @@ impl App {
     }
 
     /// Fast directory deletion using native recursive removal
-    #[cfg(unix)]
     fn remove_dir_fast(path: PathBuf) -> Result<(), String> {
-        // Use std::fs::remove_dir_all which uses unlinkat() internally on Unix
-        // This is already the fastest Rust-native approach
+        // Use standard library for recursive deletion on all platforms
+        // - Unix: uses unlinkat() internally (fastest)
+        // - Windows: uses RemoveDirectoryW recursively
         std::fs::remove_dir_all(&path).map_err(|e| e.to_string())
-    }
-
-    #[cfg(windows)]
-    fn remove_dir_fast(path: PathBuf) -> Result<(), String> {
-        // Windows: use parallel Rust deletion
-        let files: Vec<PathBuf> = WalkDir::new(&path)
-            .parallelism(jwalk::Parallelism::RayonNewPool(num_cpus::get()))
-            .skip_hidden(false)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file())
-            .map(|e| e.path())
-            .collect();
-
-        files.par_iter().for_each(|f| {
-            let _ = fs::remove_file(f);
-        });
-
-        let mut dirs: Vec<PathBuf> = WalkDir::new(&path)
-            .skip_hidden(false)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_dir())
-            .map(|e| e.path())
-            .collect();
-
-        dirs.sort_by(|a, b| b.components().count().cmp(&a.components().count()));
-
-        for dir in dirs {
-            let _ = fs::remove_dir(&dir);
-        }
-
-        Ok(())
     }
 
     /// Start async deletion

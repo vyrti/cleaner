@@ -37,6 +37,9 @@ num_cpus = "1.17"
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 
+# Home directory detection
+dirs = "6"
+
 # TUI
 ratatui = "0.29"
 crossterm = "0.29"

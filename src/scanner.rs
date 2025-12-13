@@ -41,12 +41,44 @@ impl Scanner {
         let config_clone = Arc::clone(&self.config);
         let mut scanned = 0;
 
+        // macOS Docker exclusion: sparse disk image reports wrong sizes
+        #[cfg(target_os = "macos")]
+        let docker_path: Option<PathBuf> = {
+            if let Some(home) = std::env::var_os("HOME") {
+                let docker_container = PathBuf::from(home)
+                    .join("Library/Containers/com.docker.docker");
+                if docker_container.exists() {
+                    Some(docker_container)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+        #[cfg(not(target_os = "macos"))]
+        let docker_path: Option<PathBuf> = None;
+
+        let docker_skip = Arc::new(docker_path);
+
         // Configure jwalk for maximum parallelism
+        let docker_skip_clone = Arc::clone(&docker_skip);
         let walker = WalkDir::new(&self.root)
             .parallelism(Parallelism::RayonNewPool(self.num_threads))
             .skip_hidden(false)
             .follow_links(false)
             .process_read_dir(move |_depth, _path, _state, children| {
+                // Skip Docker container on macOS
+                if let Some(ref docker) = *docker_skip_clone {
+                    children.retain(|entry| {
+                        if let Ok(ref e) = entry {
+                            !e.path().starts_with(docker)
+                        } else {
+                            true
+                        }
+                    });
+                }
+                
                 // Mark directories for skip if they match our patterns
                 // This prevents descending into directories we're going to delete
                 let matcher_clone = Arc::clone(&matcher);

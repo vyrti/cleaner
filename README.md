@@ -14,6 +14,11 @@ High-performance CLI tool for cleaning development temp files. Scans directories
 - **Safe** - Dry-run mode, time-based filtering (--days)
 - **Cross-platform** - Windows, Linux, macOS, FreeBSD | ARM and x64
 
+## Performance & Optimizations
+
+- **Parallel Scanning**: Uses `jwalk` and `rayon` to utilize all CPU cores for directory traversal.
+- **macOS Docker Fix**: Automatically detects and excludes `~/Library/Containers/com.docker.docker` to prevent inflated size reporting (Docker sparse image issue).
+
 ## Installation
 
 ### From Releases
@@ -35,24 +40,31 @@ docker pull ghcr.io/vyrti/cleaner:latest
 ## Usage
 
 ```bash
-# Interactive TUI mode (ncdu-like)
-cleaner -f ~/Projects -i
+# Interactive TUI mode (defaults to home directory)
+cleaner -i
+
+# Interactive TUI with specific folder (positional)
+cleaner -i ~/Projects
+
+# Interactive TUI with --folder flag (still works)
+cleaner -i --folder ~/Projects
 
 # Preview what would be deleted (safe)
-cleaner -f ~/Projects --dry-run
+cleaner ~/Projects --dry-run
 
 # Delete temp files
-cleaner -f ~/Projects
+cleaner ~/Projects
 
 # Filter by age (safe mode for active projects)
-cleaner -f ~/Projects --days 7
+cleaner ~/Projects --days 7
 ```
 
 ### Options
 
 | Flag | Description |
 |------|-------------|
-| `-f, --folder` | Target folder to scan (required) |
+| `[PATH]` | Target folder to scan (positional, defaults to home directory) |
+| `-f, --folder` | Target folder to scan (alternative to positional) |
 | `-i, --interactive` | Interactive TUI mode |
 | `-d, --dry-run` | Preview without deleting |
 | `-v, --verbose` | Show all matched paths |

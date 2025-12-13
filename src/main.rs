@@ -26,9 +26,13 @@ use std::time::Instant;
 #[command(name = "cleaner")]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Target folder to scan
-    #[arg(short = 'f', long = "folder", required = true)]
-    folder: PathBuf,
+    /// Target folder to scan (positional or use -f/--folder)
+    #[arg(index = 1)]
+    path: Option<PathBuf>,
+
+    /// Target folder to scan (alternative to positional)
+    #[arg(short = 'f', long = "folder")]
+    folder: Option<PathBuf>,
 
     /// Path to TOML config file
     #[arg(short = 'c', long = "config")]
@@ -58,27 +62,34 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
+    // Resolve folder: positional > --folder > home directory
+    let folder = args.path
+        .or(args.folder)
+        .unwrap_or_else(|| {
+            dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
+        });
+
     // Validate folder exists
-    if !args.folder.exists() {
+    if !folder.exists() {
         eprintln!(
             "{} Folder does not exist: {}",
             "Error:".red().bold(),
-            args.folder.display()
+            folder.display()
         );
         std::process::exit(1);
     }
 
-    if !args.folder.is_dir() {
+    if !folder.is_dir() {
         eprintln!(
             "{} Path is not a directory: {}",
             "Error:".red().bold(),
-            args.folder.display()
+            folder.display()
         );
         std::process::exit(1);
     }
 
     // Get absolute path
-    let folder = args.folder.canonicalize().unwrap_or(args.folder);
+    let folder = folder.canonicalize().unwrap_or(folder);
 
     // Load configuration (priority: env vars > config file > defaults)
     let mut config = Config::load(args.config.as_deref());

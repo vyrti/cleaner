@@ -70,6 +70,24 @@ impl DirTree {
         let mut entries: Vec<RawEntry> = Vec::new();
         let mut dir_sizes: HashMap<PathBuf, u64> = HashMap::new();
 
+        // macOS Docker exclusion: sparse disk image reports wrong sizes
+        #[cfg(target_os = "macos")]
+        let docker_path: Option<PathBuf> = {
+            if let Some(home) = std::env::var_os("HOME") {
+                let docker_container = PathBuf::from(home)
+                    .join("Library/Containers/com.docker.docker");
+                if docker_container.exists() {
+                    Some(docker_container)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+        #[cfg(not(target_os = "macos"))]
+        let docker_path: Option<PathBuf> = None;
+
         // Use jwalk with parallelism enabled
         for entry in WalkDir::new(root)
             .parallelism(jwalk::Parallelism::RayonNewPool(num_cpus::get()))
@@ -82,6 +100,14 @@ impl DirTree {
 
             if let Ok(e) = entry {
                 let path = e.path();
+
+                // Skip Docker container on macOS (sparse image reports wrong size)
+                if let Some(ref docker) = docker_path {
+                    if path.starts_with(docker) {
+                        continue;
+                    }
+                }
+
                 let is_dir = e.file_type().is_dir(); // Already cached by jwalk!
                 let name = path
                     .file_name()
