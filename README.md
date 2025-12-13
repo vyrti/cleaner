@@ -11,11 +11,11 @@
 ## Features
 
 - **⚡ Ultra-Fast** - Parallel scanning with [jwalk](https://crates.io/crates/jwalk) + [rayon](https://crates.io/crates/rayon) uses all CPU cores
-- **🎯 Smart Deletion** - Finds and removes common dev artifacts: `node_modules`, `.terraform`, `target`, `__pycache__`, etc.
-- **🖥️ Optional TUI** - ncdu-style interactive browser with instant navigation (`-i` flag)
-- **⚙️ Configurable** - TOML config + environment variables
-- **🛡️ Safe** - Dry-run mode and time-based filtering (`--days`)
-- **🌐 Cross-platform** - Windows, Linux, macOS, FreeBSD | ARM64 and x64
+- **Smart Deletion** - Finds and removes common dev artifacts: `node_modules`, `.terraform`, `target`, `__pycache__`, etc.
+- **Optional TUI** - ncdu-style interactive browser with instant navigation (`-i` flag)
+- **Configurable** - TOML config + environment variables
+- **Safe** - Dry-run mode and time-based filtering (`--days`)
+- **Cross-platform** - Windows, Linux, macOS, FreeBSD | ARM64 and x64
 
 ## Optimizations
 
