@@ -4,6 +4,7 @@
 //! development temporary files and folders like .terraform, target,
 //! node_modules, __pycache__, etc.
 
+mod config;
 mod deleter;
 mod patterns;
 mod scanner;
@@ -11,6 +12,7 @@ mod stats;
 
 use clap::Parser;
 use colored::Colorize;
+use config::Config;
 use crossbeam_channel::unbounded;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::PathBuf;
@@ -26,6 +28,10 @@ struct Args {
     /// Target folder to scan
     #[arg(short = 'f', long = "folder", required = true)]
     folder: PathBuf,
+
+    /// Path to TOML config file
+    #[arg(short = 'c', long = "config")]
+    config: Option<PathBuf>,
 
     /// Dry run - show what would be deleted without actually deleting
     #[arg(short = 'd', long = "dry-run", default_value = "false")]
@@ -64,6 +70,9 @@ fn main() {
 
     // Get absolute path
     let folder = args.folder.canonicalize().unwrap_or(args.folder);
+
+    // Load configuration (priority: env vars > config file > defaults)
+    let config = Arc::new(Config::load(args.config.as_deref()));
 
     // Determine thread count
     let num_threads = args.threads.unwrap_or_else(num_cpus::get);
@@ -109,6 +118,15 @@ fn main() {
         "Target:".bright_white().bold(),
         folder.display()
     );
+
+    if let Some(ref config_path) = args.config {
+        println!(
+            "  {} {}",
+            "Config:".bright_white().bold(),
+            config_path.display()
+        );
+    }
+
     println!(
         "  {} {}",
         "Threads:".bright_white().bold(),
@@ -121,12 +139,12 @@ fn main() {
     println!(
         "    {} {}",
         "Directories:".dimmed(),
-        patterns::TEMP_DIRECTORIES.join(", ").dimmed()
+        config.directories.join(", ").dimmed()
     );
     println!(
         "    {} {}",
         "Files:".dimmed(),
-        patterns::TEMP_FILES.join(", ").dimmed()
+        config.files.join(", ").dimmed()
     );
     println!();
 
@@ -150,7 +168,7 @@ fn main() {
     pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
     // Start scanner in separate thread
-    let scanner = scanner::Scanner::new(folder.clone(), num_threads);
+    let scanner = scanner::Scanner::new(folder.clone(), num_threads, Arc::clone(&config));
     let scan_handle = thread::spawn(move || {
         let count = scanner.scan(tx);
         count

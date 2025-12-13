@@ -1,6 +1,7 @@
 //! Parallel directory scanner using jwalk
 //! Configured for maximum performance with rayon thread pool
 
+use crate::config::Config;
 use crate::patterns::PatternMatcher;
 use crossbeam_channel::Sender;
 use jwalk::{Parallelism, WalkDir};
@@ -23,9 +24,9 @@ pub struct Scanner {
 }
 
 impl Scanner {
-    pub fn new(root: PathBuf, num_threads: usize) -> Self {
+    pub fn new(root: PathBuf, num_threads: usize, config: Arc<Config>) -> Self {
         Self {
-            matcher: Arc::new(PatternMatcher::new()),
+            matcher: Arc::new(PatternMatcher::new(config)),
             root,
             num_threads,
         }

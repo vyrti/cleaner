@@ -1,76 +1,28 @@
 //! Pattern matching for temporary files and folders
 
+use crate::config::Config;
 use std::path::Path;
+use std::sync::Arc;
 
-/// Directories that should be completely removed
-pub const TEMP_DIRECTORIES: &[&str] = &[
-    // Terraform
-    ".terraform",
-    // Rust / Maven
-    "target",
-    // Node.js
-    "node_modules",
-    // Python
-    "__pycache__",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".tox",
-    ".ruff_cache",
-    "venv",
-    ".venv",
-    ".eggs",
-    "*.egg-info",
-    // Build outputs
-    "dist",
-    "build",
-    // Next.js / Nuxt.js
-    ".next",
-    ".nuxt",
-    // Turborepo
-    ".turbo",
-    // Gradle
-    ".gradle",
-    // Coverage
-    "coverage",
-    ".coverage",
-    "htmlcov",
-    // Misc caches
-    ".cache",
-    ".parcel-cache",
-];
-
-/// File patterns that should be removed
-pub const TEMP_FILES: &[&str] = &[
-    // Python compiled
-    ".pyc",
-    ".pyo",
-    ".pyd",
-    // macOS
-    ".DS_Store",
-    // Windows
-    "Thumbs.db",
-    "desktop.ini",
-    // Editor temp files
-    ".swp",
-    ".swo",
-    "~",
-];
-
-/// SIMD-optimized finder for directory patterns
-pub struct PatternMatcher;
+/// Pattern matcher with configurable patterns
+pub struct PatternMatcher {
+    directories: Vec<String>,
+    files: Vec<String>,
+}
 
 impl PatternMatcher {
-    pub fn new() -> Self {
-        Self
+    pub fn new(config: Arc<Config>) -> Self {
+        Self {
+            directories: config.directories.clone(),
+            files: config.files.clone(),
+        }
     }
 
     /// Check if a directory name matches any temp directory pattern
-    /// Uses SIMD-accelerated search internally
     #[inline]
     pub fn is_temp_directory(&self, name: &str) -> bool {
-        // Fast path: direct comparison for common cases
-        for pattern in TEMP_DIRECTORIES {
-            if name == *pattern {
+        for pattern in &self.directories {
+            if name == pattern {
                 return true;
             }
             // Handle wildcard patterns like "*.egg-info"
@@ -81,28 +33,25 @@ impl PatternMatcher {
                 }
             }
         }
-
         false
     }
 
     /// Check if a file name matches any temp file pattern
     #[inline]
     pub fn is_temp_file(&self, name: &str) -> bool {
-        // Direct matches
-        for pattern in TEMP_FILES {
-            if name == *pattern {
+        for pattern in &self.files {
+            if name == pattern {
                 return true;
             }
             // Extension/suffix matches
-            if pattern.starts_with('.') && name.ends_with(pattern) {
+            if pattern.starts_with('.') && name.ends_with(pattern.as_str()) {
                 return true;
             }
             // Ends with pattern (like ~ for backup files)
-            if name.ends_with(pattern) {
+            if name.ends_with(pattern.as_str()) {
                 return true;
             }
         }
-
         false
     }
 
@@ -119,11 +68,15 @@ impl PatternMatcher {
             false
         }
     }
-}
 
-impl Default for PatternMatcher {
-    fn default() -> Self {
-        Self::new()
+    /// Get directory patterns for display
+    pub fn directory_patterns(&self) -> &[String] {
+        &self.directories
+    }
+
+    /// Get file patterns for display
+    pub fn file_patterns(&self) -> &[String] {
+        &self.files
     }
 }
 
@@ -131,9 +84,26 @@ impl Default for PatternMatcher {
 mod tests {
     use super::*;
 
+    fn test_config() -> Arc<Config> {
+        Arc::new(Config {
+            directories: vec![
+                ".terraform".to_string(),
+                "target".to_string(),
+                "node_modules".to_string(),
+                "__pycache__".to_string(),
+                "*.egg-info".to_string(),
+            ],
+            files: vec![
+                ".DS_Store".to_string(),
+                ".pyc".to_string(),
+                "~".to_string(),
+            ],
+        })
+    }
+
     #[test]
     fn test_temp_directories() {
-        let matcher = PatternMatcher::new();
+        let matcher = PatternMatcher::new(test_config());
         assert!(matcher.is_temp_directory(".terraform"));
         assert!(matcher.is_temp_directory("target"));
         assert!(matcher.is_temp_directory("node_modules"));
@@ -144,9 +114,8 @@ mod tests {
 
     #[test]
     fn test_temp_files() {
-        let matcher = PatternMatcher::new();
+        let matcher = PatternMatcher::new(test_config());
         assert!(matcher.is_temp_file(".DS_Store"));
-        assert!(matcher.is_temp_file("Thumbs.db"));
         assert!(matcher.is_temp_file("test.pyc"));
         assert!(matcher.is_temp_file("backup~"));
         assert!(!matcher.is_temp_file("main.rs"));
@@ -154,7 +123,7 @@ mod tests {
 
     #[test]
     fn test_egg_info() {
-        let matcher = PatternMatcher::new();
+        let matcher = PatternMatcher::new(test_config());
         assert!(matcher.is_temp_directory("mypackage.egg-info"));
     }
 }

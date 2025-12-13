@@ -33,6 +33,10 @@ colored = "3"
 # CPU detection
 num_cpus = "1.17"
 
+# Config parsing
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
 [profile.release]
 lto = true
 codegen-units = 1

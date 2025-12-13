@@ -1,0 +1,57 @@
+# Example configuration file for cleaner
+# Copy to cleaner.toml and customize as needed
+
+[patterns]
+# Directories to delete (supports * wildcard prefix)
+directories = [
+    # Terraform
+    ".terraform",
+    # Rust / Maven
+    "target",
+    # Node.js
+    "node_modules",
+    # Python
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".tox",
+    ".ruff_cache",
+    "venv",
+    ".venv",
+    ".eggs",
+    "*.egg-info",
+    # Build outputs
+    "dist",
+    "build",
+    # Next.js / Nuxt.js
+    ".next",
+    ".nuxt",
+    # Turborepo
+    ".turbo",
+    # Gradle
+    ".gradle",
+    # Coverage
+    "coverage",
+    ".coverage",
+    "htmlcov",
+    # Caches
+    ".cache",
+    ".parcel-cache",
+]
+
+# File patterns to delete (supports extension matching)
+files = [
+    # Python compiled
+    ".pyc",
+    ".pyo",
+    ".pyd",
+    # macOS
+    ".DS_Store",
+    # Windows
+    "Thumbs.db",
+    "desktop.ini",
+    # Editor temp files
+    ".swp",
+    ".swo",
+    "~",
+]
