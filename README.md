@@ -45,6 +45,9 @@ cleaner -f ~/Projects --verbose
 
 # Use custom config
 cleaner -f ~/Projects -c cleaner.toml
+
+# Filter by age (safe mode for active projects)
+cleaner -f ~/Projects --days 7
 ```
 
 ### Options
@@ -56,6 +59,7 @@ cleaner -f ~/Projects -c cleaner.toml
 | `-v, --verbose` | Show all matched paths |
 | `-c, --config` | Path to TOML config file |
 | `-j, --threads` | Number of threads (default: CPU cores) |
+| `--days` | Only delete items older than N days |
 
 ## Configuration
 
@@ -76,6 +80,9 @@ files = [
     ".DS_Store",
     "*.pyc",
 ]
+
+# Optional: Only delete items older than 30 days
+days = 30
 ```
 
 See [cleaner.toml.example](cleaner.toml.example) for all defaults.

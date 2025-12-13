@@ -48,6 +48,7 @@ pub const DEFAULT_FILES: &[&str] = &[
 pub struct ConfigFile {
     #[serde(default)]
     pub patterns: PatternsConfig,
+    pub days: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -63,6 +64,7 @@ pub struct PatternsConfig {
 pub struct Config {
     pub directories: Vec<String>,
     pub files: Vec<String>,
+    pub days: Option<u64>,
 }
 
 impl Config {
@@ -71,6 +73,7 @@ impl Config {
         // Start with defaults
         let mut directories: Vec<String> = DEFAULT_DIRECTORIES.iter().map(|s| s.to_string()).collect();
         let mut files: Vec<String> = DEFAULT_FILES.iter().map(|s| s.to_string()).collect();
+        let mut days = None;
 
         // Override with config file if provided
         if let Some(path) = config_path {
@@ -81,6 +84,9 @@ impl Config {
                     }
                     if !config.patterns.files.is_empty() {
                         files = config.patterns.files;
+                    }
+                    if config.days.is_some() {
+                        days = config.days;
                     }
                 }
             }
@@ -93,8 +99,17 @@ impl Config {
         if let Ok(env_files) = std::env::var("CLEANER_FILES") {
             files = env_files.split(',').map(|s| s.trim().to_string()).collect();
         }
+        if let Ok(env_days) = std::env::var("CLEANER_DAYS") {
+            if let Ok(d) = env_days.parse() {
+                days = Some(d);
+            }
+        }
 
-        Self { directories, files }
+        Self {
+            directories,
+            files,
+            days,
+        }
     }
 
     /// Get directories as slice of str references

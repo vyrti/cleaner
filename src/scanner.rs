@@ -19,6 +19,7 @@ pub struct ScanResult {
 /// Parallel directory scanner
 pub struct Scanner {
     matcher: Arc<PatternMatcher>,
+    config: Arc<Config>,
     root: PathBuf,
     num_threads: usize,
 }
@@ -26,7 +27,8 @@ pub struct Scanner {
 impl Scanner {
     pub fn new(root: PathBuf, num_threads: usize, config: Arc<Config>) -> Self {
         Self {
-            matcher: Arc::new(PatternMatcher::new(config)),
+            matcher: Arc::new(PatternMatcher::new(Arc::clone(&config))),
+            config,
             root,
             num_threads,
         }
@@ -36,6 +38,7 @@ impl Scanner {
     /// Returns total number of entries scanned
     pub fn scan(&self, tx: Sender<ScanResult>) -> usize {
         let matcher = Arc::clone(&self.matcher);
+        let config_clone = Arc::clone(&self.config);
         let mut scanned = 0;
 
         // Configure jwalk for maximum parallelism
@@ -47,13 +50,33 @@ impl Scanner {
                 // Mark directories for skip if they match our patterns
                 // This prevents descending into directories we're going to delete
                 let matcher_clone = Arc::clone(&matcher);
+                let days_opt = config_clone.days;
+                
                 children.iter_mut().for_each(|entry| {
                     if let Ok(ref e) = entry {
                         if e.file_type().is_dir() {
                             if let Some(name) = e.file_name().to_str() {
                                 if matcher_clone.is_temp_directory(name) {
-                                    // We'll handle this directory, skip its contents
-                                    let _ = entry.as_mut().map(|e| e.read_children_path = None);
+                                    // CHECK TIME: If too new, don't delete AND don't skip descending 
+                                    // (treat as normal dir to find potential nested heavy items? 
+                                    // Actually, if we say "don't delete target because recent", 
+                                    // we likely don't want to delete ANYTHING inside it either)
+                                    let should_delete = if let Some(days) = days_opt {
+                                        if let Ok(metadata) = e.metadata() {
+                                            if let Ok(modified) = metadata.modified() {
+                                                if let Ok(elapsed) = modified.elapsed() {
+                                                     elapsed.as_secs() > days * 24 * 60 * 60
+                                                } else { false } // systematic clock issues -> safe default
+                                            } else { false } // no mod time -> safe default
+                                        } else { false } // no metadata -> safe default
+                                    } else {
+                                        true
+                                    };
+
+                                    if should_delete {
+                                        // We'll handle this directory, skip its contents
+                                        let _ = entry.as_mut().map(|e| e.read_children_path = None);
+                                    }
                                 }
                             }
                         }
@@ -71,22 +94,37 @@ impl Scanner {
                 let is_dir = entry.file_type().is_dir();
 
                 if matcher.matches(&path, is_dir) {
-                    // Calculate size for directories (estimate) or files
-                    let size = if is_dir {
-                        // For directories marked for deletion, we'll calculate size during deletion
-                        0
+                    // Check modification time if configured
+                    let should_delete = if let Some(days) = self.config.days {
+                        if let Ok(metadata) = entry.metadata() {
+                            if let Ok(modified) = metadata.modified() {
+                                if let Ok(elapsed) = modified.elapsed() {
+                                    elapsed.as_secs() > days * 24 * 60 * 60
+                                } else { false }
+                            } else { false }
+                        } else { false }
                     } else {
-                        entry.metadata().map(|m| m.len()).unwrap_or(0)
+                        true
                     };
 
-                    let result = ScanResult {
-                        path: path.to_path_buf(),
-                        is_dir,
-                        size,
-                    };
+                    if should_delete {
+                        // Calculate size for directories (estimate) or files
+                        let size = if is_dir {
+                            // For directories marked for deletion, we'll calculate size during deletion
+                            0
+                        } else {
+                            entry.metadata().map(|m| m.len()).unwrap_or(0)
+                        };
 
-                    // Send to deletion channel - ignore send errors (receiver dropped)
-                    let _ = tx.send(result);
+                        let result = ScanResult {
+                            path: path.to_path_buf(),
+                            is_dir,
+                            size,
+                        };
+
+                        // Send to deletion channel - ignore send errors (receiver dropped)
+                        let _ = tx.send(result);
+                    }
                 }
             }
         }

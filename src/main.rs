@@ -44,6 +44,10 @@ struct Args {
     /// Number of threads for scanning and deletion (default: number of CPU cores)
     #[arg(short = 'j', long = "threads")]
     threads: Option<usize>,
+
+    /// Filter by modification time (only delete items older than N days)
+    #[arg(long = "days")]
+    days: Option<u64>,
 }
 
 fn main() {
@@ -72,7 +76,15 @@ fn main() {
     let folder = args.folder.canonicalize().unwrap_or(args.folder);
 
     // Load configuration (priority: env vars > config file > defaults)
-    let config = Arc::new(Config::load(args.config.as_deref()));
+    // Load configuration (priority: env vars > config file > defaults)
+    let mut config = Config::load(args.config.as_deref());
+    
+    // CLI args override config
+    if let Some(days) = args.days {
+        config.days = Some(days);
+    }
+    
+    let config = Arc::new(config);
 
     // Determine thread count
     let num_threads = args.threads.unwrap_or_else(num_cpus::get);
@@ -132,6 +144,15 @@ fn main() {
         "Threads:".bright_white().bold(),
         num_threads
     );
+
+    if let Some(days) = config.days {
+        println!(
+            "  {} {} days (items modified within this time are safe)",
+            "Filter:".bright_white().bold(),
+            days
+        );
+    }
+
     println!();
 
     // Show patterns being matched
