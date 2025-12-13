@@ -179,6 +179,43 @@ impl DirTree {
     pub fn get_children(&self, path: &PathBuf) -> Vec<DirEntry> {
         self.children.get(path).cloned().unwrap_or_default()
     }
+
+    /// Remove entry from the tree and update all parent sizes (O(depth))
+    pub fn delete_entry(&mut self, path: &PathBuf, is_dir: bool) {
+        if let Some(parent) = path.parent() {
+            let parent_buf = parent.to_path_buf();
+            
+            // 1. Remove from parent's children list
+            if let Some(entries) = self.children.get_mut(&parent_buf) {
+                if let Some(idx) = entries.iter().position(|e| &e.path == path) {
+                    let removed = entries.remove(idx);
+                    let size_removed = removed.size;
+
+                    // 2. Propagate size change up the tree
+                    let mut current_parent = parent_buf.clone();
+                    loop {
+                        // Find this parent in its own parent's listing
+                        if let Some(grandparent) = current_parent.parent() {
+                            let grandparent_buf = grandparent.to_path_buf();
+                             if let Some(siblings) = self.children.get_mut(&grandparent_buf) {
+                                if let Some(parent_entry) = siblings.iter_mut().find(|e| e.path == current_parent) {
+                                    parent_entry.size = parent_entry.size.saturating_sub(size_removed);
+                                }
+                             }
+                             current_parent = grandparent_buf;
+                        } else {
+                            break; // Reached root parent (which has no parent)
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. If directory, remove its children entry mapping (optional cleanup)
+        if is_dir {
+            self.children.remove(path);
+        }
+    }
 }
 
 pub fn sort_by_size(entries: &mut [DirEntry]) {

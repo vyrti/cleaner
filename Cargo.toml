@@ -41,10 +41,6 @@ toml = "0.9"
 ratatui = "0.29"
 crossterm = "0.29"
 
-# Native Unix syscalls (unlinkat)
-[target.'cfg(unix)'.dependencies]
-nix = { version = "0.30", features = ["fs"] }
-
 [profile.release]
 lto = true
 codegen-units = 1

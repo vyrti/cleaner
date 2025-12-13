@@ -21,6 +21,8 @@ pub enum SortMode {
 pub struct DeleteState {
     pub handle: JoinHandle<Result<(), String>>,
     pub entry_name: String,
+    pub entry_path: PathBuf,
+    pub is_dir: bool,
     pub entry_size: u64,
 }
 
@@ -212,7 +214,13 @@ impl App {
                             state.entry_name,
                             humansize::format_size(state.entry_size, humansize::BINARY)
                         ));
-                        self.rebuild_tree();
+                        
+                        // INSTANT UPDATE: Remove from tree in-memory (O(log n))
+                        // instead of rebuilding whole tree (O(n))
+                        if let Some(ref mut tree) = self.tree {
+                            tree.delete_entry(&state.entry_path, state.is_dir);
+                        }
+                        self.load_current_dir();
                     }
                     Ok(Err(e)) => {
                         self.set_status(format!("Error: {}", e));
@@ -302,6 +310,8 @@ impl App {
             self.delete_state = Some(DeleteState {
                 handle,
                 entry_name: entry.name.clone(),
+                entry_path: entry.path.clone(),
+                is_dir: entry.is_dir,
                 entry_size: entry.size,
             });
         }
