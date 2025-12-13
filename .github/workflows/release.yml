@@ -37,6 +37,11 @@ jobs:
             name: linux-arm64
             ext: ""
             cross: true
+          - os: ubuntu-latest
+            target: armv7-unknown-linux-gnueabihf
+            name: linux-armv7
+            ext: ""
+            cross: true
           # macOS
           - os: macos-latest
             target: x86_64-apple-darwin
