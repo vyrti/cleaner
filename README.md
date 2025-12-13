@@ -11,7 +11,7 @@ High-performance CLI tool for cleaning development temp files. Scans directories
 - **Fast** - Multi-threaded scanning with [jwalk](https://crates.io/crates/jwalk) and parallel deletion with [rayon](https://crates.io/crates/rayon)
 - **Configurable** - TOML config file + environment variable overrides
 - **Safe** - Dry-run mode to preview before deleting
-- **Cross-platform** - Windows, Linux, macOS, FreeBSD
+- **Cross-platform** - Windows, Linux, macOS, FreeBSD | ARM and x64
 
 ## Installation
 
