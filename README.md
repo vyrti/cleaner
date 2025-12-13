@@ -9,8 +9,9 @@ High-performance CLI tool for cleaning development temp files. Scans directories
 ## Features
 
 - **Fast** - Multi-threaded scanning with [jwalk](https://crates.io/crates/jwalk) and parallel deletion with [rayon](https://crates.io/crates/rayon)
+- **Interactive** - ncdu-style TUI for browsing and deleting temp folders (`-i` flag)
 - **Configurable** - TOML config file + environment variable overrides
-- **Safe** - Dry-run mode to preview before deleting
+- **Safe** - Dry-run mode, time-based filtering (--days)
 - **Cross-platform** - Windows, Linux, macOS, FreeBSD | ARM and x64
 
 ## Installation
@@ -34,17 +35,14 @@ docker pull ghcr.io/vyrti/cleaner:latest
 ## Usage
 
 ```bash
+# Interactive TUI mode (ncdu-like)
+cleaner -f ~/Projects -i
+
 # Preview what would be deleted (safe)
 cleaner -f ~/Projects --dry-run
 
 # Delete temp files
 cleaner -f ~/Projects
-
-# With verbose output
-cleaner -f ~/Projects --verbose
-
-# Use custom config
-cleaner -f ~/Projects -c cleaner.toml
 
 # Filter by age (safe mode for active projects)
 cleaner -f ~/Projects --days 7
@@ -55,6 +53,7 @@ cleaner -f ~/Projects --days 7
 | Flag | Description |
 |------|-------------|
 | `-f, --folder` | Target folder to scan (required) |
+| `-i, --interactive` | Interactive TUI mode |
 | `-d, --dry-run` | Preview without deleting |
 | `-v, --verbose` | Show all matched paths |
 | `-c, --config` | Path to TOML config file |

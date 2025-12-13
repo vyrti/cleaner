@@ -9,6 +9,7 @@ mod deleter;
 mod patterns;
 mod scanner;
 mod stats;
+mod tui;
 
 use clap::Parser;
 use colored::Colorize;
@@ -48,6 +49,10 @@ struct Args {
     /// Filter by modification time (only delete items older than N days)
     #[arg(long = "days")]
     days: Option<u64>,
+
+    /// Interactive TUI mode (ncdu-like)
+    #[arg(short = 'i', long = "interactive")]
+    interactive: bool,
 }
 
 fn main() {
@@ -76,7 +81,6 @@ fn main() {
     let folder = args.folder.canonicalize().unwrap_or(args.folder);
 
     // Load configuration (priority: env vars > config file > defaults)
-    // Load configuration (priority: env vars > config file > defaults)
     let mut config = Config::load(args.config.as_deref());
     
     // CLI args override config
@@ -85,6 +89,15 @@ fn main() {
     }
     
     let config = Arc::new(config);
+
+    // Interactive TUI mode
+    if args.interactive {
+        if let Err(e) = tui::run(folder, config) {
+            eprintln!("{} TUI error: {}", "Error:".red().bold(), e);
+            std::process::exit(1);
+        }
+        return;
+    }
 
     // Determine thread count
     let num_threads = args.threads.unwrap_or_else(num_cpus::get);
