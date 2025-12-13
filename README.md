@@ -4,21 +4,21 @@
 [![Release](https://github.com/vyrti/cleaner/actions/workflows/release.yml/badge.svg)](https://github.com/vyrti/cleaner/actions/workflows/release.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-High-performance CLI tool for cleaning development temp files. Scans directories in parallel and removes `.terraform`, `target`, `node_modules`, `__pycache__`, and other common development artifacts.
+**Ultra-fast parallel scanner and cleaner for development temp files.** Instantly finds and removes `.terraform`, `target`, `node_modules`, `__pycache__`, and other build artifacts across your entire drive. Optional ncdu-style TUI for interactive browsing.
 
 ![Screenshot](pic.png)
 
 ## Features
 
-- **Fast** - Multi-threaded scanning with [jwalk](https://crates.io/crates/jwalk) and parallel deletion with [rayon](https://crates.io/crates/rayon)
-- **Interactive** - ncdu-style TUI for browsing and deleting temp folders (`-i` flag)
-- **Configurable** - TOML config file + environment variable overrides
-- **Safe** - Dry-run mode, time-based filtering (--days)
-- **Cross-platform** - Windows, Linux, macOS, FreeBSD | ARM and x64
+- **⚡ Ultra-Fast** - Parallel scanning with [jwalk](https://crates.io/crates/jwalk) + [rayon](https://crates.io/crates/rayon) uses all CPU cores
+- **🎯 Smart Deletion** - Finds and removes common dev artifacts: `node_modules`, `.terraform`, `target`, `__pycache__`, etc.
+- **🖥️ Optional TUI** - ncdu-style interactive browser with instant navigation (`-i` flag)
+- **⚙️ Configurable** - TOML config + environment variables
+- **🛡️ Safe** - Dry-run mode and time-based filtering (`--days`)
+- **🌐 Cross-platform** - Windows, Linux, macOS, FreeBSD | ARM64 and x64
 
-## Performance & Optimizations
+## Optimizations
 
-- **Parallel Scanning**: Uses `jwalk` and `rayon` to utilize all CPU cores for directory traversal.
 - **macOS Docker Fix**: Automatically detects and excludes `~/Library/Containers/com.docker.docker` to prevent inflated size reporting (Docker sparse image issue).
 
 ## Installation
@@ -42,23 +42,21 @@ docker pull ghcr.io/vyrti/cleaner:latest
 ## Usage
 
 ```bash
-# Interactive TUI mode (defaults to home directory)
-cleaner -i
+# Quick scan and delete (defaults to home directory)
+cleaner
 
-# Interactive TUI with specific folder (positional)
-cleaner -i ~/Projects
-
-# Interactive TUI with --folder flag (still works)
-cleaner -i --folder ~/Projects
+# Scan specific folder
+cleaner ~/Projects
 
 # Preview what would be deleted (safe)
 cleaner ~/Projects --dry-run
 
-# Delete temp files
-cleaner ~/Projects
-
-# Filter by age (safe mode for active projects)
+# Filter by age (only delete items older than 7 days)
 cleaner ~/Projects --days 7
+
+# Interactive TUI mode (optional - for browsing)
+cleaner -i
+cleaner -i ~/Projects
 ```
 
 ### Options
@@ -66,10 +64,10 @@ cleaner ~/Projects --days 7
 | Flag | Description |
 |------|-------------|
 | `[PATH]` | Target folder to scan (positional, defaults to home directory) |
-| `-f, --folder` | Target folder to scan (alternative to positional) |
-| `-i, --interactive` | Interactive TUI mode |
+| `-i, --interactive` | **Optional** interactive TUI mode for browsing |
 | `-d, --dry-run` | Preview without deleting |
 | `-v, --verbose` | Show all matched paths |
+| `-f, --folder` | Target folder to scan (alternative to positional) |
 | `-c, --config` | Path to TOML config file |
 | `-j, --threads` | Number of threads (default: CPU cores) |
 | `--days` | Only delete items older than N days |
