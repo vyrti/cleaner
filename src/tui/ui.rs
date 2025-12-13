@@ -85,8 +85,17 @@ fn render_list(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_footer(f: &mut Frame, app: &App, area: Rect) {
-    let text = if app.is_deleting() {
+    let text = if app.is_cleaning() {
+        " ⏳ Cleaning... please wait".to_string()
+    } else if app.is_deleting() {
         " ⏳ Deleting... please wait".to_string()
+    } else if app.confirm_clean {
+        format!(
+            " Clean all temp files in '{}'? (y/n)",
+            app.current_path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| app.current_path.to_string_lossy().to_string())
+        )
     } else if app.confirm_delete {
         if let Some(entry) = app.selected_entry() {
             format!(
@@ -98,12 +107,12 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
             " Delete? (y/n)".to_string()
         }
     } else if let Some(ref msg) = app.status_message {
-        format!(" {} │ ↑↓:nav  Enter:open  d:delete  s:sort  r:refresh  q:quit", msg)
+        format!(" {} │ c:clean  d:delete  s:sort  r:refresh  q:quit", msg)
     } else {
-        " ↑↓/jk:navigate  Enter/→:open  ←:back  d:delete  s:sort  r:refresh  q:quit".to_string()
+        " ↑↓:nav  Enter:open  ←:back  c:clean  d:delete  s:sort  r:refresh  q:quit".to_string()
     };
 
-    let style = if app.confirm_delete {
+    let style = if app.confirm_delete || app.confirm_clean {
         Style::default().fg(Color::Yellow).bold()
     } else {
         Style::default()

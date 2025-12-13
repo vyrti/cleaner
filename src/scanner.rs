@@ -61,8 +61,33 @@ impl Scanner {
 
         let docker_skip = Arc::new(docker_path);
 
+        // Protected toolchain/package manager directories (NEVER clean inside these)
+        let protected_paths: Arc<Vec<PathBuf>> = Arc::new(if let Some(home) = std::env::var_os("HOME") {
+            let home = PathBuf::from(home);
+            vec![
+                home.join(".cargo"),      // Rust toolchain & crates
+                home.join(".rustup"),     // Rust toolchains
+                home.join("go"),          // Go packages
+                home.join(".go"),         // Go alternative
+                home.join(".npm"),        // NPM cache
+                home.join(".nvm"),        // Node version manager
+                home.join(".pyenv"),      // Python version manager
+                home.join(".rbenv"),      // Ruby version manager
+                home.join(".gradle"),     // Gradle home
+                home.join(".m2"),         // Maven repository
+                home.join(".local"),      // User local bin/lib
+                home.join(".config"),     // User config files
+                home.join(".ssh"),        // SSH keys
+                home.join(".gnupg"),      // GPG keys
+                home.join("Library"),     // macOS Library (contains app data)
+            ]
+        } else {
+            vec![]
+        });
+
         // Configure jwalk for maximum parallelism
         let docker_skip_clone = Arc::clone(&docker_skip);
+        let protected_clone = Arc::clone(&protected_paths);
         let walker = WalkDir::new(&self.root)
             .parallelism(Parallelism::RayonNewPool(self.num_threads))
             .skip_hidden(false)
@@ -78,6 +103,15 @@ impl Scanner {
                         }
                     });
                 }
+                
+                // Skip protected toolchain directories
+                children.retain(|entry| {
+                    if let Ok(ref e) = entry {
+                        !protected_clone.iter().any(|p| e.path().starts_with(p))
+                    } else {
+                        true
+                    }
+                });
                 
                 // Mark directories for skip if they match our patterns
                 // This prevents descending into directories we're going to delete

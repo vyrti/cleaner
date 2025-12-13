@@ -19,7 +19,16 @@
 
 ## Optimizations
 
+- **Parallel Scanning**: Uses `jwalk` and `rayon` to utilize all CPU cores for directory traversal.
 - **macOS Docker Fix**: Automatically detects and excludes `~/Library/Containers/com.docker.docker` to prevent inflated size reporting (Docker sparse image issue).
+- **Protected Directories**: Never scans or cleans critical toolchain directories in NON tui mode:
+  - `~/.cargo`, `~/.rustup` (Rust)
+  - `~/go`, `~/.go` (Go)
+  - `~/.npm`, `~/.nvm` (Node.js)
+  - `~/.pyenv`, `~/.rbenv` (Python/Ruby)
+  - `~/.gradle`, `~/.m2` (Java)
+  - `~/.local`, `~/.config`, `~/.ssh`, `~/.gnupg`, `~/Library`
+
 
 ## Installation
 
