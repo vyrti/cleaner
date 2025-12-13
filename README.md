@@ -6,6 +6,8 @@
 
 High-performance CLI tool for cleaning development temp files. Scans directories in parallel and removes `.terraform`, `target`, `node_modules`, `__pycache__`, and other common development artifacts.
 
+![Screenshot](pic.png)
+
 ## Features
 
 - **Fast** - Multi-threaded scanning with [jwalk](https://crates.io/crates/jwalk) and parallel deletion with [rayon](https://crates.io/crates/rayon)
