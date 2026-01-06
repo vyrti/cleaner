@@ -1,6 +1,6 @@
 [package]
 name = "cleaner"
-version = "0.0.1"
+version = "0.0.6"
 edition = "2021"
 description = "High-performance folder cleaner for development temp files"
 license = "Apache-2.0"
