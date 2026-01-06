@@ -54,17 +54,13 @@ impl Deleter {
         });
     }
 
-    /// Delete a single item - size is calculated only in verbose mode
+    /// Delete a single item - counts files and bytes for directories
     fn delete_item(&self, item: &ScanResult) {
-        // Only calculate size if verbose (skip expensive recursive walk otherwise)
-        let size = if self.verbose {
-            if item.is_dir {
-                Self::dir_size_fast(&item.path)
-            } else {
-                item.size
-            }
+        // For directories, count files inside and calculate size before deletion
+        let (file_count, size) = if item.is_dir {
+            Self::count_dir_contents(&item.path)
         } else {
-            0
+            (0, item.size)
         };
 
         if self.verbose {
@@ -76,6 +72,10 @@ impl Deleter {
         if self.dry_run {
             if item.is_dir {
                 self.stats.add_directory();
+                // Add the files that would be deleted inside this directory
+                for _ in 0..file_count {
+                    self.stats.add_file();
+                }
             } else {
                 self.stats.add_file();
             }
@@ -94,6 +94,10 @@ impl Deleter {
             Ok(_) => {
                 if item.is_dir {
                     self.stats.add_directory();
+                    // Add the files deleted inside this directory
+                    for _ in 0..file_count {
+                        self.stats.add_file();
+                    }
                 } else {
                     self.stats.add_file();
                 }
@@ -106,16 +110,23 @@ impl Deleter {
         }
     }
 
-    /// Fast directory size estimation using parallel walk
-    fn dir_size_fast(path: &std::path::Path) -> u64 {
+    /// Count files and total size inside a directory using parallel walk
+    fn count_dir_contents(path: &std::path::Path) -> (usize, u64) {
         use jwalk::WalkDir;
         
-        WalkDir::new(path)
+        let mut file_count = 0usize;
+        let mut total_size = 0u64;
+        
+        for entry in WalkDir::new(path)
             .skip_hidden(false)
             .into_iter()
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())
-            .map(|e| e.metadata().map(|m| m.len()).unwrap_or(0))
-            .sum()
+        {
+            file_count += 1;
+            total_size += entry.metadata().map(|m| m.len()).unwrap_or(0);
+        }
+        
+        (file_count, total_size)
     }
 }
