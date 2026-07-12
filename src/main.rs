@@ -62,6 +62,10 @@ struct Args {
     /// Output results in JSON format (scripting/devops mode)
     #[arg(long = "json", default_value = "false")]
     json: bool,
+
+    /// Force deletion inside protected system directories
+    #[arg(long = "force", default_value = "false")]
+    force: bool,
 }
 
 fn main() {
@@ -120,6 +124,7 @@ fn main() {
     if let Some(days) = args.days {
         config.days = Some(days);
     }
+    config.force = args.force;
     
     let config = Arc::new(config);
 

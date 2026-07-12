@@ -102,6 +102,7 @@ mod tests {
                 "~".to_string(),
             ],
             days: None,
+            force: false,
         })
     }
 

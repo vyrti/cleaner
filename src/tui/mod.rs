@@ -59,8 +59,9 @@ pub fn run(root: PathBuf, config: Arc<Config>) -> io::Result<()> {
     // Start scan in background thread
     let root_clone = root.clone();
     let matcher_clone = Arc::clone(&matcher);
+    let config_clone = Arc::clone(&config);
     let scan_handle = thread::spawn(move || {
-        tree::DirTree::build_with_progress(&root_clone, &matcher_clone, progress_clone, cancelled_clone)
+        tree::DirTree::build_with_progress(&root_clone, &matcher_clone, progress_clone, cancelled_clone, config_clone.force)
     });
 
     // Show live progress while scanning with quit support
@@ -121,7 +122,7 @@ pub fn run(root: PathBuf, config: Arc<Config>) -> io::Result<()> {
     };
 
     // Create app with pre-built tree
-    let mut app = App::new_with_tree(root, matcher, dir_tree);
+    let mut app = App::new_with_tree(root, matcher, dir_tree, config.force);
 
     // Main loop
     let result = run_app(&mut terminal, &mut app);

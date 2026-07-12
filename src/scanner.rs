@@ -196,7 +196,7 @@ fn walk_scanner(
         }
 
         // Calculate if path is in a protected system directory (where we won't auto-delete)
-        let in_protected = protected_paths.iter().any(|p| path.starts_with(p) && !root.starts_with(p));
+        let in_protected = !config.force && protected_paths.iter().any(|p| path.starts_with(p) && !root.starts_with(p));
 
         // 3. Skip macOS OS mounts to prevent duplicate scans
         #[cfg(target_os = "macos")]

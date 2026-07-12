@@ -87,6 +87,9 @@ cleaner ~/Projects --confirm --days 7
 | `-c, --config` | Path to TOML config file |
 | `-j, --threads` | Number of threads (default: CPU cores) |
 | `--days` | Only delete items older than N days |
+| `--json` | Output results in JSON format (forces CLI mode) |
+| `--force` | Disable system directory protections (allow automated cleaning inside protected paths) |
+
 ## Safety & System Protection
 
 To protect system integrity, shell configurations, developer toolchains, and package managers (such as the Cargo environment or IDE files like Antigravity IDE), `cleaner` implements strict cross-platform safety rules for automated cleaning:
@@ -96,7 +99,7 @@ To protect system integrity, shell configurations, developer toolchains, and pac
    - **macOS & Linux**: `/System`, `/Library`, `/Applications`, `/usr`, `/var`, `/etc`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/boot`, `/opt`, `/private`, `/dev`, `/proc`, `/sys`, `/run`, and user-profile paths (like `~/.config`, `~/.local`, `~/.cargo`, `~/.rustup`, `~/.npm`, `~/.ssh`, `~/.gnupg`, and `~/Library`).
    - **Windows**: `%SystemRoot%` (`C:\Windows`), `%ProgramFiles%` (`C:\Program Files`), `%ProgramFiles(x86)%` (`C:\Program Files (x86)`), `%ProgramData%` (`C:\ProgramData`), `C:\System Volume Information`, and the user's `AppData` directory.
 3. **Manual Override**: These protected system areas remain fully traversable in the TUI browser so you can inspect them. If you explicitly wish to delete an item, you can select it and press the Delete key (`d`) to invoke manual deletion with confirmation.
-4. **Ancestor Rule**: If you explicitly set the scanner root inside a protected directory (e.g., `cleaner /usr/local/Projects`), that target directory will be scanned and cleaned normally.
+4. **Force Cleanup**: If you need to perform automated cleanup inside protected system directories (e.g., `cleaner /usr/local/Projects`), you must explicitly pass the `--force` flag. This disables the protection exclusions, allowing autoclean to target temp paths anywhere.
 
 ## Configuration
 

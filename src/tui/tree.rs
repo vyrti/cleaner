@@ -58,6 +58,7 @@ impl DirTree {
         matcher: &PatternMatcher,
         progress: Arc<ScanProgress>,
         cancelled: Arc<AtomicBool>,
+        force: bool,
     ) -> Self {
         // Build the skip check closure
         #[cfg(target_os = "macos")]
@@ -211,7 +212,7 @@ impl DirTree {
                     .filter(|e| !e.is_symlink)
                     .map(|e| {
                         let full_path = dir_path.join(&e.name);
-                        let in_protected = protected_paths.iter().any(|p| full_path.starts_with(p) && !root_path.starts_with(p));
+                        let in_protected = !force && protected_paths.iter().any(|p| full_path.starts_with(p) && !root_path.starts_with(p));
                         let is_temp = if in_protected {
                             false
                         } else if e.is_dir {

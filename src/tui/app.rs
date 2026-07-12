@@ -48,6 +48,7 @@ pub struct App {
     pub total_size: u64,
     pub disk_total: u64,
     pub disk_free: u64,
+    pub force: bool,
     matcher: Arc<PatternMatcher>,
     tree: Option<DirTree>,
     /// Active deletion thread
@@ -60,7 +61,7 @@ pub struct App {
 
 impl App {
     #[allow(dead_code)]
-    pub fn new(root: PathBuf, matcher: Arc<PatternMatcher>) -> Self {
+    pub fn new(root: PathBuf, matcher: Arc<PatternMatcher>, force: bool) -> Self {
         Self {
             current_path: root.clone(),
             root,
@@ -76,6 +77,7 @@ impl App {
             total_size: 0,
             disk_total: 0,
             disk_free: 0,
+            force,
             matcher,
             tree: None,
             delete_state: None,
@@ -84,7 +86,7 @@ impl App {
         }
     }
 
-    pub fn new_with_tree(root: PathBuf, matcher: Arc<PatternMatcher>, tree: DirTree) -> Self {
+    pub fn new_with_tree(root: PathBuf, matcher: Arc<PatternMatcher>, tree: DirTree, force: bool) -> Self {
         let mut app = Self {
             current_path: root.clone(),
             root,
@@ -100,6 +102,7 @@ impl App {
             total_size: 0,
             disk_total: 0,
             disk_free: 0,
+            force,
             matcher,
             tree: Some(tree),
             delete_state: None,
@@ -129,7 +132,7 @@ impl App {
     pub fn build_tree(&mut self) {
         let progress = Arc::new(tree::ScanProgress::new());
         let cancelled = Arc::new(AtomicBool::new(false));
-        self.tree = Some(DirTree::build_with_progress(&self.root, &self.matcher, progress, cancelled));
+        self.tree = Some(DirTree::build_with_progress(&self.root, &self.matcher, progress, cancelled, self.force));
         self.load_current_dir();
     }
 
@@ -165,7 +168,7 @@ impl App {
     fn rebuild_tree(&mut self) {
         let progress = Arc::new(tree::ScanProgress::new());
         let cancelled = Arc::new(AtomicBool::new(false));
-        self.tree = Some(DirTree::build_with_progress(&self.root, &self.matcher, progress, cancelled));
+        self.tree = Some(DirTree::build_with_progress(&self.root, &self.matcher, progress, cancelled, self.force));
         self.load_current_dir();
     }
 
@@ -173,7 +176,7 @@ impl App {
     fn rebuild_tree_with_selection(&mut self, select_name: Option<&str>) {
         let progress = Arc::new(tree::ScanProgress::new());
         let cancelled = Arc::new(AtomicBool::new(false));
-        self.tree = Some(DirTree::build_with_progress(&self.root, &self.matcher, progress, cancelled));
+        self.tree = Some(DirTree::build_with_progress(&self.root, &self.matcher, progress, cancelled, self.force));
         self.load_current_dir_with_selection(select_name);
     }
 

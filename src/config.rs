@@ -65,6 +65,7 @@ pub struct Config {
     pub directories: Vec<String>,
     pub files: Vec<String>,
     pub days: Option<u64>,
+    pub force: bool,
 }
 
 impl Config {
@@ -109,6 +110,7 @@ impl Config {
             directories,
             files,
             days,
+            force: false,
         }
     }
 
