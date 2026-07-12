@@ -4,6 +4,9 @@
 [![Release](https://github.com/vyrti/cleaner/actions/workflows/release.yml/badge.svg)](https://github.com/vyrti/cleaner/actions/workflows/release.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
+> [!WARNING]
+> **Disclaimer**: Use this application at your own risk. The authors and contributors are not responsible for any data loss, system configuration breakage, or other damages resulting from the use of this software. Always double-check what is being deleted before executing manual deletions (see [Safety & System Protection](#safety--system-protection) for details).
+
 **Ultra-fast parallel scanner and cleaner for development temp files.** Instantly finds and removes `.terraform`, `target`, `node_modules`, `__pycache__`, and other build artifacts across your entire drive. Optional ncdu-style TUI for interactive browsing.
 
 ![Screenshot](pic.png)
@@ -84,7 +87,16 @@ cleaner ~/Projects --confirm --days 7
 | `-c, --config` | Path to TOML config file |
 | `-j, --threads` | Number of threads (default: CPU cores) |
 | `--days` | Only delete items older than N days |
-| `--json` | Output results in JSON format (forces CLI mode) |
+## Safety & System Protection
+
+To protect system integrity, shell configurations, developer toolchains, and package managers (such as the Cargo environment or IDE files like Antigravity IDE), `cleaner` implements strict cross-platform safety rules for automated cleaning:
+
+1. **Auto-Clean Exclusions**: Any matching files or folders located inside protected directories are automatically ignored by automated cleaning features (e.g., TUI Clean-All via the `c` key, or CLI non-interactive cleanups). They are never flagged as temporary targets.
+2. **Protected Locations**:
+   - **macOS & Linux**: `/System`, `/Library`, `/Applications`, `/usr`, `/var`, `/etc`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/boot`, `/opt`, `/private`, `/dev`, `/proc`, `/sys`, `/run`, and user-profile paths (like `~/.config`, `~/.local`, `~/.cargo`, `~/.rustup`, `~/.npm`, `~/.ssh`, `~/.gnupg`, and `~/Library`).
+   - **Windows**: `%SystemRoot%` (`C:\Windows`), `%ProgramFiles%` (`C:\Program Files`), `%ProgramFiles(x86)%` (`C:\Program Files (x86)`), `%ProgramData%` (`C:\ProgramData`), `C:\System Volume Information`, and the user's `AppData` directory.
+3. **Manual Override**: These protected system areas remain fully traversable in the TUI browser so you can inspect them. If you explicitly wish to delete an item, you can select it and press the Delete key (`d`) to invoke manual deletion with confirmation.
+4. **Ancestor Rule**: If you explicitly set the scanner root inside a protected directory (e.g., `cleaner /usr/local/Projects`), that target directory will be scanned and cleaned normally.
 
 ## Configuration
 
