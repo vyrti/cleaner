@@ -2,7 +2,7 @@
 
 [![Build](https://github.com/vyrti/cleaner/actions/workflows/build.yml/badge.svg)](https://github.com/vyrti/cleaner/actions/workflows/build.yml)
 [![Release](https://github.com/vyrti/cleaner/actions/workflows/release.yml/badge.svg)](https://github.com/vyrti/cleaner/actions/workflows/release.yml)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT%20or%20Apache%202.0-blue.svg)](#license)
 
 > [!WARNING]
 > **Disclaimer**: Use this application at your own risk. The authors and contributors are not responsible for any data loss, system configuration breakage, or other damages resulting from the use of this software. Always double-check what is being deleted before executing manual deletions (see [Safety & System Protection](#safety--system-protection) for details).
