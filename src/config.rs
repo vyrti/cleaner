@@ -113,11 +113,13 @@ impl Config {
     }
 
     /// Get directories as slice of str references
+    #[allow(dead_code)]
     pub fn directories(&self) -> Vec<&str> {
         self.directories.iter().map(|s| s.as_str()).collect()
     }
 
     /// Get files as slice of str references
+    #[allow(dead_code)]
     pub fn files(&self) -> Vec<&str> {
         self.files.iter().map(|s| s.as_str()).collect()
     }

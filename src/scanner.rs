@@ -88,6 +88,7 @@ impl Scanner {
         // Configure jwalk for maximum parallelism
         let docker_skip_clone = Arc::clone(&docker_skip);
         let protected_clone = Arc::clone(&protected_paths);
+        let root_clone = self.root.clone();
         let walker = WalkDir::new(&self.root)
             .parallelism(Parallelism::RayonNewPool(self.num_threads))
             .skip_hidden(false)
@@ -112,6 +113,27 @@ impl Scanner {
                         true
                     }
                 });
+
+                // Skip /System/Volumes and /Volumes on macOS to prevent duplicate counting
+                #[cfg(target_os = "macos")]
+                {
+                    children.retain(|entry| {
+                        if let Ok(ref e) = entry {
+                            let path = e.path();
+                            if (path.starts_with("/System/Volumes") || path == std::path::Path::new("/System/Volumes"))
+                                && !root_clone.starts_with("/System/Volumes")
+                            {
+                                return false;
+                            }
+                            if (path.starts_with("/Volumes") || path == std::path::Path::new("/Volumes"))
+                                && !root_clone.starts_with("/Volumes")
+                            {
+                                return false;
+                            }
+                        }
+                        true
+                    });
+                }
                 
                 // Mark directories for skip if they match our patterns
                 // This prevents descending into directories we're going to delete

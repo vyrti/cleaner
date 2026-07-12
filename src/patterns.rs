@@ -70,11 +70,13 @@ impl PatternMatcher {
     }
 
     /// Get directory patterns for display
+    #[allow(dead_code)]
     pub fn directory_patterns(&self) -> &[String] {
         &self.directories
     }
 
     /// Get file patterns for display
+    #[allow(dead_code)]
     pub fn file_patterns(&self) -> &[String] {
         &self.files
     }

@@ -57,6 +57,7 @@ pub struct App {
 }
 
 impl App {
+    #[allow(dead_code)]
     pub fn new(root: PathBuf, matcher: Arc<PatternMatcher>) -> Self {
         Self {
             current_path: root.clone(),
@@ -118,6 +119,7 @@ impl App {
         self.clean_state.is_some()
     }
 
+    #[allow(dead_code)]
     pub fn build_tree(&mut self) {
         let progress = Arc::new(tree::ScanProgress::new());
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -159,6 +161,7 @@ impl App {
         self.load_current_dir();
     }
 
+    #[allow(dead_code)]
     fn rebuild_tree_with_selection(&mut self, select_name: Option<&str>) {
         let progress = Arc::new(tree::ScanProgress::new());
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -166,6 +169,7 @@ impl App {
         self.load_current_dir_with_selection(select_name);
     }
 
+    #[allow(dead_code)]
     pub fn scan_current_dir(&mut self) {
         if self.tree.is_none() {
             self.build_tree();

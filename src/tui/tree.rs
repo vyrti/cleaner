@@ -88,11 +88,46 @@ impl DirTree {
         #[cfg(not(target_os = "macos"))]
         let docker_path: Option<PathBuf> = None;
 
+        let root_clone = root.clone();
         // Use jwalk with parallelism enabled
         for entry in WalkDir::new(root)
             .parallelism(jwalk::Parallelism::RayonNewPool(num_cpus::get()))
             .skip_hidden(false)
-            .min_depth(1) {
+            .min_depth(1)
+            .process_read_dir(move |_depth, _path, _state, children| {
+                // Skip Docker container on macOS
+                if let Some(ref docker) = docker_path {
+                    children.retain(|entry| {
+                        if let Ok(ref e) = entry {
+                            !e.path().starts_with(docker)
+                        } else {
+                            true
+                        }
+                    });
+                }
+
+                // Skip /System/Volumes and /Volumes on macOS to prevent duplicate counting
+                #[cfg(target_os = "macos")]
+                {
+                    children.retain(|entry| {
+                        if let Ok(ref e) = entry {
+                            let path = e.path();
+                            if (path.starts_with("/System/Volumes") || path == std::path::Path::new("/System/Volumes"))
+                                && !root_clone.starts_with("/System/Volumes")
+                            {
+                                return false;
+                            }
+                            if (path.starts_with("/Volumes") || path == std::path::Path::new("/Volumes"))
+                                && !root_clone.starts_with("/Volumes")
+                            {
+                                return false;
+                            }
+                        }
+                        true
+                    });
+                }
+            })
+        {
             if cancelled.load(Ordering::Relaxed) {
                 progress.done.store(true, Ordering::Relaxed);
                 return Self { children };
@@ -100,13 +135,6 @@ impl DirTree {
 
             if let Ok(e) = entry {
                 let path = e.path();
-
-                // Skip Docker container on macOS (sparse image reports wrong size)
-                if let Some(ref docker) = docker_path {
-                    if path.starts_with(docker) {
-                        continue;
-                    }
-                }
 
                 let is_dir = e.file_type().is_dir(); // Already cached by jwalk!
                 let name = path
