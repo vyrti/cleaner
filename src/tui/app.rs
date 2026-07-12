@@ -381,7 +381,6 @@ impl App {
         if self.is_busy() { return; }
         
         let root = self.current_path.clone();
-        let matcher = Arc::clone(&self.matcher);
         
         let handle = thread::spawn(move || {
             let stats = Arc::new(Stats::new());

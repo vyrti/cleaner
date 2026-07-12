@@ -13,7 +13,7 @@ clap = { version = "4", features = ["derive"] }
 jwalk = "0.8"
 
 # Data parallelism for deletions
-rayon = "1.11"
+rayon = "1.12"
 
 # Lock-free channels for producer-consumer
 crossbeam-channel = "0.5"
@@ -35,13 +35,13 @@ num_cpus = "1.17"
 
 # Config parsing
 serde = { version = "1", features = ["derive"] }
-toml = "0.9"
+toml = "1.1"
 
 # Home directory detection
 dirs = "6"
 
 # TUI
-ratatui = "0.29"
+ratatui = "0.30"
 crossterm = "0.29"
 
 [profile.release]

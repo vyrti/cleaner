@@ -132,7 +132,10 @@ pub fn run(root: PathBuf, config: Arc<Config>) -> io::Result<()> {
     result
 }
 
-fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
+fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()>
+where
+    io::Error: From<B::Error>,
+{
     loop {
         // Clear expired status messages
         app.tick();

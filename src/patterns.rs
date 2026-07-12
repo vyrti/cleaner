@@ -98,6 +98,7 @@ mod tests {
                 ".pyc".to_string(),
                 "~".to_string(),
             ],
+            days: None,
         })
     }
 
