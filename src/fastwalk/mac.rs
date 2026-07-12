@@ -2,9 +2,11 @@
 // Copyright (c) 2023 quivent
 // Licensed under MIT or Apache-2.0
 
-use super::RawEntry;
+use super::{MetadataMode, RawEntry, INITIAL_DIRECTORY_CAPACITY};
+use std::cell::RefCell;
 use std::ffi::CString;
 use std::os::raw::{c_int, c_void};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::Path;
 
 const ATTR_BIT_MAP_COUNT: u16 = 5;
@@ -17,6 +19,18 @@ const ATTR_FILE_DATALENGTH: u32 = 0x00000200;
 const VREG: u32 = 1;
 const VDIR: u32 = 2;
 const VLNK: u32 = 5;
+
+thread_local! {
+    static BULK_BUFFER: RefCell<Vec<u8>> = RefCell::new(vec![0u8; 256 * 1024]);
+}
+
+struct FileDescriptor(c_int);
+
+impl Drop for FileDescriptor {
+    fn drop(&mut self) {
+        unsafe { libc::close(self.0) };
+    }
+}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -36,12 +50,12 @@ pub struct attrreference_t {
 }
 
 #[repr(C, packed(4))]
-struct EntryHeader {
+#[derive(Clone, Copy)]
+struct EntryPrefix {
     length: u32,
     returned: attribute_set_t,
     name_info: attrreference_t,
     obj_type: u32,
-    data_length: u64,
 }
 
 extern "C" {
@@ -54,11 +68,8 @@ extern "C" {
     ) -> c_int;
 }
 
-pub fn read_dir_bulk(path: &Path) -> std::io::Result<Vec<RawEntry>> {
-    let path_str = path.to_str().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid UTF-8 path")
-    })?;
-    let path_cstr = CString::new(path_str)
+pub fn read_dir_bulk(path: &Path, _metadata_mode: MetadataMode) -> std::io::Result<Vec<RawEntry>> {
+    let path_cstr = CString::new(path.as_os_str().as_bytes())
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
 
     let fd = unsafe {
@@ -70,6 +81,7 @@ pub fn read_dir_bulk(path: &Path) -> std::io::Result<Vec<RawEntry>> {
     if fd < 0 {
         return Err(std::io::Error::last_os_error());
     }
+    let fd = FileDescriptor(fd);
 
     let mut attr_list = libc::attrlist {
         bitmapcount: ATTR_BIT_MAP_COUNT,
@@ -81,81 +93,99 @@ pub fn read_dir_bulk(path: &Path) -> std::io::Result<Vec<RawEntry>> {
         forkattr: 0,
     };
 
-    let mut result_entries = Vec::with_capacity(256);
-    let mut buffer = vec![0u8; 256 * 1024]; // 256KB buffer
+    BULK_BUFFER.with(|buffer| {
+        let mut buffer = buffer.borrow_mut();
+        let mut result_entries = Vec::with_capacity(INITIAL_DIRECTORY_CAPACITY);
 
-    loop {
-        let result = unsafe {
-            getattrlistbulk(
-                fd,
-                &mut attr_list as *mut libc::attrlist,
-                buffer.as_mut_ptr() as *mut c_void,
-                buffer.len(),
-                0,
-            )
-        };
-
-        if result < 0 {
-            let err = std::io::Error::last_os_error();
-            unsafe { libc::close(fd) };
-            return Err(err);
-        }
-
-        if result == 0 {
-            break;
-        }
-
-        let mut ptr = buffer.as_ptr();
-        for _ in 0..result {
-            let header = unsafe { &*(ptr as *const EntryHeader) };
-
-            // Extract the filename using the attrreference_t offset
-            let name_info_ptr = unsafe { ptr.offset(24) };
-            let name_ptr =
-                unsafe { name_info_ptr.offset(header.name_info.attr_dataoffset as isize) };
-            let name_bytes = unsafe {
-                std::slice::from_raw_parts(name_ptr, header.name_info.attr_length as usize)
+        loop {
+            let result = unsafe {
+                getattrlistbulk(
+                    fd.0,
+                    &mut attr_list as *mut libc::attrlist,
+                    buffer.as_mut_ptr() as *mut c_void,
+                    buffer.len(),
+                    0,
+                )
             };
 
-            // attr_length includes a trailing null byte or padding
-            let len = name_bytes
-                .iter()
-                .position(|&b| b == 0)
-                .unwrap_or(name_bytes.len());
-            let name = std::str::from_utf8(&name_bytes[..len])
-                .unwrap_or("")
-                .to_string();
-
-            // Skip "." and ".."
-            if name == "." || name == ".." {
-                ptr = unsafe { ptr.offset(header.length as isize) };
-                continue;
+            if result < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if result == 0 {
+                break;
             }
 
-            let is_dir = header.obj_type == VDIR;
-            let is_symlink = header.obj_type == VLNK;
+            let mut ptr = buffer.as_ptr();
+            for _ in 0..result {
+                let record_offset = unsafe { ptr.offset_from(buffer.as_ptr()) as usize };
+                let remaining = buffer.len().saturating_sub(record_offset);
+                if remaining < std::mem::size_of::<EntryPrefix>() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "truncated getattrlistbulk record",
+                    ));
+                }
+                let header = unsafe { std::ptr::read_unaligned(ptr.cast::<EntryPrefix>()) };
+                let record_len = header.length as usize;
+                if record_len < std::mem::size_of::<EntryPrefix>() || record_len > remaining {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "invalid getattrlistbulk record length",
+                    ));
+                }
 
-            // Extract file size if it's a regular file
-            let size =
-                if !is_dir && !is_symlink && (header.returned.fileattr & ATTR_FILE_DATALENGTH) != 0
+                let name_reference_offset = std::mem::offset_of!(EntryPrefix, name_info);
+                let name_start = record_offset as isize
+                    + name_reference_offset as isize
+                    + header.name_info.attr_dataoffset as isize;
+                let name_len = header.name_info.attr_length as usize;
+                let record_end = record_offset + record_len;
+                if name_start < record_offset as isize
+                    || name_start as usize > record_end
+                    || name_len > record_end.saturating_sub(name_start as usize)
                 {
-                    header.data_length
-                } else {
-                    0
-                };
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "invalid getattrlistbulk filename reference",
+                    ));
+                }
+                let name_bytes = &buffer[name_start as usize..name_start as usize + name_len];
+                let len = name_bytes
+                    .iter()
+                    .position(|&byte| byte == 0)
+                    .unwrap_or(name_bytes.len());
+                let name = std::ffi::OsString::from_vec(name_bytes[..len].to_vec());
 
-            result_entries.push(RawEntry {
-                name,
-                size,
-                is_dir,
-                is_symlink,
-            });
+                if name != "." && name != ".." {
+                    let is_dir = header.obj_type == VDIR;
+                    let is_symlink = header.obj_type == VLNK;
+                    let size = if !is_dir
+                        && !is_symlink
+                        && (header.returned.fileattr & ATTR_FILE_DATALENGTH) != 0
+                    {
+                        let data_offset = std::mem::size_of::<EntryPrefix>();
+                        if record_len < data_offset + std::mem::size_of::<u64>() {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "truncated getattrlistbulk file length",
+                            ));
+                        }
+                        unsafe { std::ptr::read_unaligned(ptr.add(data_offset).cast::<u64>()) }
+                    } else {
+                        0
+                    };
+                    result_entries.push(RawEntry {
+                        name,
+                        size,
+                        is_dir,
+                        is_symlink,
+                    });
+                }
 
-            // Advance pointer by the record length
-            ptr = unsafe { ptr.offset(header.length as isize) };
+                ptr = unsafe { ptr.add(record_len) };
+            }
         }
-    }
 
-    unsafe { libc::close(fd) };
-    Ok(result_entries)
+        Ok(result_entries)
+    })
 }

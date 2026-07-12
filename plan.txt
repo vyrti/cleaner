@@ -1,0 +1,183 @@
+Cleaner performance plan
+========================
+
+Status key: [ ] pending, [~] in progress, [x] completed
+
+Audit facts and constraints
+---------------------------
+- The application is not zero-copy throughout. OS directory buffers are temporary, so retained
+  TUI names must be owned or interned before the next syscall reuses those buffers.
+- Linux/macOS/fallback readers currently copy names into owned String values. Indexing moves that
+  String into DirEntry, but each entry also allocates/stores a full PathBuf.
+- On 64-bit targets RawEntry is 40 bytes and DirEntry is 64 bytes before filename/path heap data.
+- The former 256-entry initial Vec capacity reserved about 10 KiB per retained directory; it is now 32.
+- Atomics are limited to statistics, progress, completion/cancellation, and stage counters. Relaxed
+  ordering does not remove cache-line contention, so hot-path updates should remain batched.
+- mimalloc can reduce allocator overhead but cannot make an allocation-heavy representation zero-copy.
+- Filesystem I/O will eventually dominate after allocation, hashing, synchronization, and rendering
+  overhead are reduced; architectural changes must therefore be justified with native profiling.
+
+Phase 1 — high impact, low risk
+--------------------------------
+[x] Reduce retained per-directory Vec capacity (256 to 32 RawEntry slots).
+[x] Batch scanner and progress counters instead of atomics per filesystem entry.
+[x] Batch deletion statistics instead of one atomic increment per contained file.
+[x] Make --threads configure the scanner and deletion Rayon pools.
+[x] Replace unbounded result channels with bounded channels and preserve streaming.
+[x] Render only terminal-visible TUI rows instead of formatting every entry per frame.
+[x] Cache the expensive recursive clean-confirmation statistics.
+[x] Remove the unused direct memchr dependency.
+
+Phase 2 — filesystem and concurrency hot paths
+-----------------------------------------------
+[x] Add a names/types-only walker mode so Linux avoids statat for every unmatched CLI file.
+[x] Remove per-subdirectory Arc and Sender clones from scanner recursion.
+[x] Precompute scanner protected-root state instead of checking root ancestry per entry.
+[x] Replace the single walker result mutex with a bounded collector channel.
+[x] Reuse the macOS getattrlistbulk buffer per worker instead of allocating 256 KiB per directory.
+[x] Make TUI clean use the active configuration and scan/delete concurrently.
+[x] Make refresh/rebuild asynchronous so it does not block terminal input.
+
+Phase 3 — measured architectural work
+--------------------------------------
+[x] Calculate directory sizes in place without a duplicate PathBuf size map.
+[x] Report indexing, sizing, and sorting progress separately.
+[x] Store filenames as OsString so non-UTF-8 Unix paths remain lossless.
+[ ] Replace full PathBuf-per-entry storage with compact node/parent IDs.
+[x] Eliminate the intermediate RawEntry tree by building retained entries during traversal.
+[ ] Benchmark exact-pattern lookup alternatives before changing the matcher.
+[ ] Re-profile representative Linux, macOS, Windows, and FreeBSD trees after Phases 1–2.
+
+Phase 4 — ownership and allocation
+--------------------------------------------------
+[x] Move RawEntry names into DirEntry during indexing instead of cloning the String again.
+[x] Remove the auxiliary PathBuf-to-size map from directory-size calculation.
+[x] Reduce the measured mostly-small-directory initial RawEntry capacity from 32 to 8.
+[x] Evaluate boxed slices; retain Arc<Vec> without eager shrink/reallocation because lazy sorting needs mutability.
+[x] Stop storing both a full PathBuf and a separate filename allocation in every DirEntry.
+[ ] Intern repeated parent paths or replace paths with compact node and parent IDs.
+[x] Avoid constructing a full PathBuf for every unmatched non-directory scanner entry.
+[x] Avoid cloning an entire directory's DirEntry vector whenever the user enters or leaves it.
+[x] Avoid cloning the selected DirEntry when navigation/deletion only needs a few fields.
+[x] Avoid cloning configured pattern Strings into PatternMatcher when shared immutable storage works.
+[x] Change or remove Config::directories()/files(); they allocate a Vec of references per call.
+[x] Audit per-frame String allocations: header/footer and terminal-visible rows allocate; hidden rows do not.
+[x] Do not cache formatted rows yet; it duplicates full-tree data and visible-row formatting is not material locally.
+
+Phase 5 — atomics, locks, channels, and pools
+------------------------------------------------------------
+[x] Use Relaxed ordering for independent statistics/progress counters.
+[x] Batch filesystem scan counters once per directory instead of once/twice per entry.
+[x] Batch contained-file deletion counts with add_files(count).
+[x] Replace the walker-wide HashMap mutex with a bounded producer/collector channel.
+[x] Bound scan-result channels to apply backpressure.
+[x] Remove per-directory Arc and Sender reference-count operations in scanner recursion.
+[x] Make requested thread count control CLI scan/delete work and the lazy TUI scan pool.
+[x] Aggregate all deletion statistics per Rayon batch, not once per ScanResult.
+[ ] Benchmark the bounded channel capacity on SSD, HDD, network, and very slow filesystems.
+[ ] Benchmark I/O concurrency separately from CPU count; num_cpus may not be the best scan/delete width.
+[x] Prevent scanner and deleter pools from oversubscribing CPUs when both are active.
+[x] Use one shared configurable CLI/TUI clean pool; retain the global TUI tree pool for non-overlapping rebuilds.
+[x] Replace num_cpus with std::thread::available_parallelism.
+
+Phase 6 — filesystem traversal and syscalls
+-----------------------------------------------------------
+[x] Add a types-only CLI traversal path so Linux avoids statat for unmatched files.
+[x] Stat only matched CLI files when their size/age is actually needed.
+[x] Reuse a thread-local macOS bulk syscall buffer.
+[ ] Benchmark macOS bulk-buffer sizes instead of assuming 256 KiB is optimal.
+[x] Avoid a second full traversal of every matched directory before live deletion.
+[x] Keep exact live file/byte reporting with a one-pass counted deleter.
+[x] Implement a counted iterative deleter that counts and removes in one traversal.
+[x] Preserve exact dry-run accounting while using a one-pass live-run path.
+[x] Handle Linux/FreeBSD directory entries whose d_type is Unknown by consulting stat mode.
+[ ] Verify rustix directory-entry semantics and performance natively on FreeBSD.
+[x] Preserve non-UTF-8 Unix filenames with OsString/OsStr rather than lossy String conversion.
+[x] Allow macOS paths that are not representable as UTF-8 where the underlying API permits it.
+[x] Replace the macOS packed-record magic offset with layout-derived parsing.
+[x] Bounds-check every macOS bulk record, attribute offset, length, and record advance before dereference.
+[x] Report or aggregate directory permission/read failures instead of silently skipping them.
+[ ] Define behavior for metadata races where a file changes or disappears between scan and deletion.
+[ ] Recheck symlink, mount, and filesystem-cycle protection on every supported OS.
+
+Phase 7 — scanner and matcher
+---------------------------------------------
+[x] Pre-filter protected paths whose ancestor already contains the scan root.
+[x] Determine protected-directory state per directory and inherit it, avoiding path-prefix checks per file.
+[x] Split directory handling from file handling so nonmatching files need no joined full path.
+[x] Precompile patterns into exact-name and suffix groups.
+[ ] Benchmark linear Vec matching against HashSet/FxHash/foldhash alternatives for real pattern counts.
+[x] Remove redundant file-pattern checks after matcher preprocessing.
+[ ] Benchmark case-sensitive behavior and document whether Windows matching should be case-insensitive.
+[x] Surface channel receiver closure instead of silently ignoring failed ScanResult sends.
+[x] Surface scanner read failures and include them in final error statistics.
+
+Phase 8 — TUI tree and rendering
+------------------------------------------------
+[x] Compute directory sizes in place.
+[x] Sort directory entry lists in parallel.
+[x] Render only the terminal-visible entry window.
+[x] Cache recursive clean-confirmation totals while the confirmation is displayed.
+[x] Make refresh/rebuild asynchronous.
+[x] Remove the second sort performed when App loads a directory already sorted by DirTree.
+[x] Support lazy sorting so unopened directories are not all sorted during initial construction.
+[ ] Replace full-tree eager construction with compact/lazy nodes if measurements justify it.
+[x] Eliminate the RawEntry HashMap to DirTree HashMap intermediate representation and peak memory overlap.
+[x] Cache clean-preview totals on demand; reject eager per-directory caches because they slow every tree build.
+[x] Make recursive directory-size traversal iterative to avoid stack overflow on pathological depth.
+[x] Remove every descendant mapping when a deleted directory is removed.
+[x] Evaluate direct parent indexing; reject the eager full-path index because it slows scans for a rare delete operation.
+[x] Remove App::scroll_offset; visible-window rendering derives its start from selection and viewport.
+[x] Preserve current directory and cursor selection after asynchronous refresh when paths still exist.
+[x] Add cancellation and visible progress for asynchronous refresh/rebuild operations.
+[x] Avoid spawning a brand-new OS thread for trivial single-file deletions.
+[x] Ensure TUI clean, delete, refresh, initial-scan cancellation, and quit join background work.
+
+Phase 9 — deletion and statistics
+-------------------------------------------------
+[x] Process deletion work in bounded parallel batches.
+[x] Batch file counts for matched directories.
+[x] Fold/reduce successful files, directories, bytes, and errors per Rayon batch before atomic publication.
+[x] Avoid concurrent stderr printing from deletion workers; collect and print errors after each batch.
+[x] Use saturating totals consistently for files, bytes, and statistics counters.
+[ ] Benchmark batch sizes instead of fixing deletion batches permanently at 64.
+[ ] Benchmark deletion concurrency independently for files, shallow directories, and deep directories.
+[ ] Verify overlapping/ancestor match handling cannot count or delete the same path twice.
+
+Phase 10 — hashing, dependencies, and build profile
+-----------------------------------------------------------------
+[x] Benchmark std HashMap hashing against foldhash with an ignored release microbenchmark.
+[x] Apply foldhash consistently to traversal results, DirTree, and tree caches.
+[x] Remove cleaner's unused direct memchr dependency (transitive users may still retain the crate).
+[ ] Benchmark mimalloc against each platform's system allocator on scan, tree build, navigation, and deletion.
+[ ] Keep or remove mimalloc based on per-platform measurements rather than allocation count alone.
+[ ] Audit dependency features and binary size after runtime performance work is stable.
+
+Phase 11 — configuration and correctness
+-------------------------------------------------------
+[x] Make TUI clean use the active configuration instead of Config::default().
+[x] Report invalid/unreadable configuration files rather than silently falling back to defaults.
+[x] Validate zero and extreme thread counts at the CLI boundary (1..=256).
+[x] Document that true zero-copy names cannot borrow temporary OS buffers after the next syscall.
+[x] Prefer compact owned OsString names over unsafe borrowed data with invalid lifetimes.
+[ ] Add regression tests for all performance refactors, cancellation, errors, and platform path semantics.
+
+Profiling and acceptance matrix
+-------------------------------
+[ ] Establish repeatable small, wide, deep, and multi-million-entry synthetic fixtures.
+[ ] Include mostly-files, mostly-directories, many-empty-directories, and large matched-directory fixtures.
+[ ] Measure wall time, CPU time, syscall count, allocations, peak RSS, lock contention, and channel stalls.
+[ ] Measure scanning, indexing, sizing, sorting, first render, navigation, preview, and deletion separately.
+[ ] Profile debug and release behavior without including compilation time.
+[ ] Run cold-cache and warm-cache measurements where the OS permits it.
+[ ] Compare 1, 2, physical-core, logical-core, and I/O-oversubscribed thread counts.
+[ ] Run native Linux, macOS, Windows, and FreeBSD measurements at the same commit.
+[ ] Record baseline and post-change results in the repository before marking architectural work complete.
+[ ] Reject optimizations that regress correctness, cancellation, memory safety, or common-case performance.
+
+Validation required before checking an item
+-------------------------------------------
+- cargo test --all-targets --locked
+- cargo clippy --all-targets --locked -- -D warnings
+- cargo fmt --all -- --check
+- git diff --check

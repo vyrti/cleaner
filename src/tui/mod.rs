@@ -79,13 +79,14 @@ pub fn run(root: PathBuf, config: Arc<Config>) -> io::Result<()> {
             let dirs = progress.get_dirs();
             let bytes = progress.get_bytes();
             let size_str = humansize::format_size(bytes, humansize::BINARY);
+            let errors = progress.get_errors();
             let phase = progress.get_phase();
             let (stage_current, stage_total) = progress.get_stage_progress();
             let (phase_name, phase_title) = match phase {
                 0 => ("⏳ Scanning filesystem", "Scanning"),
                 1 => ("🔄 Indexing entries", "Indexing"),
                 2 => ("📐 Calculating folder sizes", "Sizing"),
-                3 => ("↕ Sorting folders", "Sorting"),
+                3 => ("🧭 Finalizing navigation", "Finalizing"),
                 _ => ("🔄 Finalizing", "Finalizing"),
             };
             let stage_line = if phase == 0 || stage_total == 0 {
@@ -101,13 +102,14 @@ pub fn run(root: PathBuf, config: Arc<Config>) -> io::Result<()> {
             };
 
             let text = format!(
-                "\n\n  {}: {}{}\n\n  📁 {} folders\n  📄 {} files\n  💾 {}\n\n  Press 'q' to cancel",
+                "\n\n  {}: {}{}\n\n  📁 {} folders\n  📄 {} files\n  💾 {}\n  ⚠ {} errors\n\n  Press 'q' to cancel",
                 phase_name,
                 root.display(),
                 stage_line,
                 dirs,
                 files,
-                size_str
+                size_str,
+                errors
             );
 
             let block = Block::default()
@@ -132,6 +134,9 @@ pub fn run(root: PathBuf, config: Arc<Config>) -> io::Result<()> {
 
     // Cleanup if user quit during scan
     if user_quit {
+        // Cancellation is cooperative. Join before returning so the scan cannot
+        // outlive terminal teardown as a detached background worker.
+        let _ = scan_handle.join();
         cleanup_terminal();
         println!("Scan cancelled.");
         return Ok(());

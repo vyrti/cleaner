@@ -17,24 +17,65 @@ impl Stats {
         Self::default()
     }
 
+    #[cfg(test)]
     #[inline]
     pub fn add_directory(&self) {
-        self.directories_deleted.fetch_add(1, Ordering::Relaxed);
+        self.add_directories(1);
     }
 
     #[inline]
+    pub fn add_directories(&self, count: usize) {
+        let _ =
+            self.directories_deleted
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                    Some(value.saturating_add(count))
+                });
+    }
+
+    #[cfg(test)]
+    #[inline]
     pub fn add_file(&self) {
-        self.files_deleted.fetch_add(1, Ordering::Relaxed);
+        self.add_files(1);
+    }
+
+    #[inline]
+    pub fn add_files(&self, count: usize) {
+        let _ = self
+            .files_deleted
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                Some(value.saturating_add(count))
+            });
     }
 
     #[inline]
     pub fn add_bytes(&self, bytes: u64) {
-        self.bytes_freed.fetch_add(bytes, Ordering::Relaxed);
+        let _ = self
+            .bytes_freed
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                Some(value.saturating_add(bytes))
+            });
+    }
+
+    #[cfg(test)]
+    #[inline]
+    pub fn add_error(&self) {
+        self.add_errors(1);
     }
 
     #[inline]
-    pub fn add_error(&self) {
-        self.errors.fetch_add(1, Ordering::Relaxed);
+    pub fn add_errors(&self, count: usize) {
+        let _ = self
+            .errors
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                Some(value.saturating_add(count))
+            });
+    }
+
+    pub fn add_batch(&self, directories: usize, files: usize, bytes: u64, errors: usize) {
+        self.add_directories(directories);
+        self.add_files(files);
+        self.add_bytes(bytes);
+        self.add_errors(errors);
     }
 
     pub fn directories(&self) -> usize {
@@ -73,6 +114,7 @@ mod tests {
         );
         stats.add_directory();
         stats.add_file();
+        stats.add_files(3);
         stats.add_bytes(42);
         stats.add_bytes(8);
         stats.add_error();
@@ -83,7 +125,7 @@ mod tests {
                 stats.bytes(),
                 stats.error_count()
             ),
-            (1, 1, 50, 1)
+            (1, 4, 50, 1)
         );
     }
 

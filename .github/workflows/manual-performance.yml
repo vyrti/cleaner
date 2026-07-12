@@ -1,0 +1,119 @@
+name: Manual Performance
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit SHA, branch, or tag to profile
+        required: true
+        default: main
+        type: string
+      scale:
+        description: Entries per fixture class (1000000 is a large run)
+        required: true
+        default: "10000"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  native:
+    name: Profile ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: Linux
+          - os: macos-latest
+            name: macOS
+          - os: windows-latest
+            name: Windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out selected commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build profiler fixture and release binary
+        shell: bash
+        run: |
+          rustc -O tools/create_fixtures.rs -o target/create-fixtures
+          cargo build --release --locked
+
+      - name: Create fixtures
+        shell: bash
+        run: target/create-fixtures target/profile-fixtures "${{ inputs.scale }}"
+
+      - name: Profile thread widths and warm cache
+        shell: bash
+        run: |
+          mkdir -p profile-results
+          for threads in 1 2 4 8; do
+            for pass in coldish warm; do
+              { time -p target/release/cleaner target/profile-fixtures --json --threads "$threads"; } > "profile-results/${{ matrix.name }}-${threads}-${pass}.txt" 2>&1
+            done
+          done
+          rustc --version > profile-results/toolchain.txt
+          cargo tree -e features > profile-results/dependency-features.txt
+
+      - name: Run release microbenchmarks
+        shell: bash
+        run: cargo test --release --locked manual_profile -- --ignored --nocapture > "profile-results/${{ matrix.name }}-microbenchmarks.txt" 2>&1
+
+      - name: Compare system allocator
+        shell: bash
+        run: |
+          cargo build --release --locked --no-default-features --features system-allocator
+          { time -p target/release/cleaner target/profile-fixtures --json --threads 4; } > "profile-results/${{ matrix.name }}-system-allocator.txt" 2>&1
+
+      - name: Upload profile
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-${{ matrix.name }}-${{ github.run_id }}
+          path: profile-results
+
+  freebsd:
+    name: Profile FreeBSD
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out selected commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Run native FreeBSD profile
+        uses: vmactions/freebsd-vm@v1.4.6
+        with:
+          release: "14.4"
+          usesh: true
+          sync: rsync
+          run: |
+            set -eu
+            pkg install -y rust
+            rustc -O tools/create_fixtures.rs -o target/create-fixtures
+            cargo build --release --locked
+            target/create-fixtures target/profile-fixtures "${{ inputs.scale }}"
+            mkdir -p profile-results
+            for threads in 1 2 4 8; do
+              for pass in coldish warm; do
+                { time -p target/release/cleaner target/profile-fixtures --json --threads "$threads"; } > "profile-results/FreeBSD-${threads}-${pass}.txt" 2>&1
+              done
+            done
+            rustc --version > profile-results/toolchain.txt
+            cargo tree -e features > profile-results/dependency-features.txt
+            cargo test --release --locked manual_profile -- --ignored --nocapture > profile-results/FreeBSD-microbenchmarks.txt 2>&1
+
+      - name: Upload profile
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-FreeBSD-${{ github.run_id }}
+          path: profile-results

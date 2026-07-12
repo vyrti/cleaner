@@ -1,35 +1,61 @@
 //! Pattern matching for temporary files and folders
 
 use crate::config::Config;
+use std::ffi::OsStr;
 use std::path::Path;
 use std::sync::Arc;
 
 /// Pattern matcher with configurable patterns
 pub struct PatternMatcher {
-    directories: Vec<String>,
-    files: Vec<String>,
+    config: Arc<Config>,
+    directories: Vec<CompiledPattern>,
+    files: Vec<usize>,
+}
+
+enum CompiledPattern {
+    Exact(usize),
+    Suffix(usize),
 }
 
 impl PatternMatcher {
     pub fn new(config: Arc<Config>) -> Self {
+        let directories = config
+            .directories
+            .iter()
+            .enumerate()
+            .map(|(index, pattern)| {
+                if pattern.starts_with('*') {
+                    CompiledPattern::Suffix(index)
+                } else {
+                    CompiledPattern::Exact(index)
+                }
+            })
+            .collect();
+        let files = (0..config.files.len()).collect();
         Self {
-            directories: config.directories.clone(),
-            files: config.files.clone(),
+            config,
+            directories,
+            files,
         }
     }
 
     /// Check if a directory name matches any temp directory pattern
     #[inline]
-    pub fn is_temp_directory(&self, name: &str) -> bool {
+    pub fn is_temp_directory(&self, name: impl AsRef<OsStr>) -> bool {
+        let Some(name) = name.as_ref().to_str() else {
+            return false;
+        };
         for pattern in &self.directories {
-            if name == pattern {
-                return true;
-            }
-            // Handle wildcard patterns like "*.egg-info"
-            if let Some(suffix) = pattern.strip_prefix('*') {
-                if name.ends_with(suffix) {
+            match *pattern {
+                CompiledPattern::Exact(index) if name == self.config.directories[index] => {
                     return true;
                 }
+                CompiledPattern::Suffix(index)
+                    if name.ends_with(&self.config.directories[index][1..]) =>
+                {
+                    return true;
+                }
+                _ => {}
             }
         }
         false
@@ -37,17 +63,12 @@ impl PatternMatcher {
 
     /// Check if a file name matches any temp file pattern
     #[inline]
-    pub fn is_temp_file(&self, name: &str) -> bool {
-        for pattern in &self.files {
-            if name == pattern {
-                return true;
-            }
-            // Extension/suffix matches
-            if pattern.starts_with('.') && name.ends_with(pattern.as_str()) {
-                return true;
-            }
-            // Ends with pattern (like ~ for backup files)
-            if name.ends_with(pattern.as_str()) {
+    pub fn is_temp_file(&self, name: impl AsRef<OsStr>) -> bool {
+        let Some(name) = name.as_ref().to_str() else {
+            return false;
+        };
+        for &index in &self.files {
+            if name.ends_with(self.config.files[index].as_str()) {
                 return true;
             }
         }
@@ -60,9 +81,9 @@ impl PatternMatcher {
     pub fn matches(&self, path: &Path, is_dir: bool) -> bool {
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
             if is_dir {
-                self.is_temp_directory(name)
+                self.is_temp_directory(OsStr::new(name))
             } else {
-                self.is_temp_file(name)
+                self.is_temp_file(OsStr::new(name))
             }
         } else {
             false
@@ -72,13 +93,17 @@ impl PatternMatcher {
     /// Get directory patterns for display
     #[allow(dead_code)]
     pub fn directory_patterns(&self) -> &[String] {
-        &self.directories
+        &self.config.directories
     }
 
     /// Get file patterns for display
     #[allow(dead_code)]
     pub fn file_patterns(&self) -> &[String] {
-        &self.files
+        &self.config.files
+    }
+
+    pub fn config(&self) -> Arc<Config> {
+        Arc::clone(&self.config)
     }
 }
 
@@ -145,5 +170,63 @@ mod tests {
         let matcher = PatternMatcher::new(test_config());
         let path = Path::new(std::ffi::OsStr::from_bytes(b"\xff"));
         assert!(!matcher.matches(path, false));
+    }
+
+    #[test]
+    #[ignore = "manual release microbenchmark"]
+    fn manual_profile_pattern_lookup() {
+        use foldhash::HashSet;
+        use std::collections::HashSet as StdHashSet;
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        let config = test_config();
+        let matcher = PatternMatcher::new(Arc::clone(&config));
+        let names = ["src", "target", "module.pyc", "package.egg-info"];
+        let iterations = 1_000_000;
+
+        let start = Instant::now();
+        for index in 0..iterations {
+            black_box(matcher.is_temp_directory(names[index % names.len()]));
+        }
+        let linear = start.elapsed();
+
+        let std_exact: StdHashSet<&str> = config
+            .directories
+            .iter()
+            .filter(|pattern| !pattern.starts_with('*'))
+            .map(String::as_str)
+            .collect();
+        let fold_exact: HashSet<&str> = config
+            .directories
+            .iter()
+            .filter(|pattern| !pattern.starts_with('*'))
+            .map(String::as_str)
+            .collect();
+        let suffixes: Vec<_> = config
+            .directories
+            .iter()
+            .filter_map(|pattern| pattern.strip_prefix('*'))
+            .collect();
+
+        let start = Instant::now();
+        for index in 0..iterations {
+            let name = names[index % names.len()];
+            black_box(
+                std_exact.contains(name) || suffixes.iter().any(|suffix| name.ends_with(suffix)),
+            );
+        }
+        let std_hash = start.elapsed();
+
+        let start = Instant::now();
+        for index in 0..iterations {
+            let name = names[index % names.len()];
+            black_box(
+                fold_exact.contains(name) || suffixes.iter().any(|suffix| name.ends_with(suffix)),
+            );
+        }
+        let fold_hash = start.elapsed();
+
+        println!("pattern lookup: linear={linear:?} std_hash={std_hash:?} foldhash={fold_hash:?}");
     }
 }

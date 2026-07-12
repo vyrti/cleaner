@@ -69,6 +69,16 @@ pub struct Config {
 }
 
 impl Config {
+    pub fn try_load(config_path: Option<&Path>) -> Result<Self, String> {
+        if let Some(path) = config_path {
+            let content = std::fs::read_to_string(path)
+                .map_err(|error| format!("Cannot read config {}: {error}", path.display()))?;
+            toml::from_str::<ConfigFile>(&content)
+                .map_err(|error| format!("Invalid config {}: {error}", path.display()))?;
+        }
+        Ok(Self::load(config_path))
+    }
+
     /// Load configuration with priority: env vars > config file > defaults
     pub fn load(config_path: Option<&Path>) -> Self {
         Self::load_with_env(config_path, |name| std::env::var(name).ok())
@@ -121,18 +131,6 @@ impl Config {
             force: false,
         }
     }
-
-    /// Get directories as slice of str references
-    #[allow(dead_code)]
-    pub fn directories(&self) -> Vec<&str> {
-        self.directories.iter().map(|s| s.as_str()).collect()
-    }
-
-    /// Get files as slice of str references
-    #[allow(dead_code)]
-    pub fn files(&self) -> Vec<&str> {
-        self.files.iter().map(|s| s.as_str()).collect()
-    }
 }
 
 impl Default for Config {
@@ -155,8 +153,8 @@ mod tests {
         let config = Config::load_with_env(None, no_env);
         assert_eq!(config.directories.len(), DEFAULT_DIRECTORIES.len());
         assert_eq!(config.files.len(), DEFAULT_FILES.len());
-        assert!(config.directories().contains(&"target"));
-        assert!(config.files().contains(&".pyc"));
+        assert!(config.directories.iter().any(|pattern| pattern == "target"));
+        assert!(config.files.iter().any(|pattern| pattern == ".pyc"));
         assert_eq!(config.days, None);
         assert!(!config.force);
     }
@@ -212,5 +210,17 @@ mod tests {
             (name == "CLEANER_DAYS").then(|| "not-a-number".into())
         });
         assert_eq!(config.days, Some(4));
+    }
+
+    #[test]
+    fn try_load_reports_missing_and_invalid_files() {
+        let temp = TempDir::new("config-errors");
+        assert!(Config::try_load(Some(&temp.join("missing.toml")))
+            .unwrap_err()
+            .contains("Cannot read config"));
+        let invalid = temp.write("invalid.toml", b"not valid = [");
+        assert!(Config::try_load(Some(&invalid))
+            .unwrap_err()
+            .contains("Invalid config"));
     }
 }

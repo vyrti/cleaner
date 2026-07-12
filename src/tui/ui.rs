@@ -60,21 +60,30 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_list(f: &mut Frame, app: &App, area: Rect) {
+    let visible_rows = usize::from(area.height.saturating_sub(2)).max(1);
+    let start = app.selected.saturating_add(1).saturating_sub(visible_rows);
+    let end = start.saturating_add(visible_rows).min(app.entries.len());
     let items: Vec<ListItem> = app
         .entries
+        .get(start..end)
+        .unwrap_or_default()
         .iter()
         .enumerate()
-        .map(|(i, entry)| {
+        .map(|(relative_index, entry)| {
+            let index = start + relative_index;
             let size_str = humansize::format_size(entry.size, humansize::BINARY);
             let prefix = if entry.is_dir { "▸ " } else { "  " };
             let temp_marker = if entry.is_temp { " [TEMP]" } else { "" };
 
             let text = format!(
                 "{}{:<40} {:>10}{}",
-                prefix, entry.name, size_str, temp_marker
+                prefix,
+                entry.name.to_string_lossy(),
+                size_str,
+                temp_marker
             );
 
-            let style = if i == app.selected {
+            let style = if index == app.selected {
                 Style::default().bg(Color::DarkGray).bold()
             } else if entry.is_temp {
                 Style::default().fg(TEMP_COLOR)
@@ -93,13 +102,25 @@ fn render_list(f: &mut Frame, app: &App, area: Rect) {
         .highlight_style(Style::default().bg(Color::DarkGray));
 
     let mut state = ListState::default();
-    state.select(Some(app.selected));
+    state.select((start < end).then_some(app.selected.saturating_sub(start)));
 
     f.render_stateful_widget(list, area, &mut state);
 }
 
 fn render_footer(f: &mut Frame, app: &App, area: Rect) {
-    let text = if app.is_cleaning() {
+    let text = if let Some((phase, current, total)) = app.rebuild_progress() {
+        let stage = match phase {
+            0 => "scanning",
+            1 => "indexing",
+            2 => "sizing",
+            _ => "finalizing",
+        };
+        if total == 0 {
+            format!(" ⏳ Rebuilding tree: {stage}...")
+        } else {
+            format!(" ⏳ Rebuilding tree: {stage} {current}/{total}")
+        }
+    } else if app.is_cleaning() {
         " ⏳ Cleaning... please wait".to_string()
     } else if app.is_deleting() {
         " ⏳ Deleting... please wait".to_string()
@@ -120,7 +141,7 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
         if let Some(entry) = app.selected_entry() {
             format!(
                 " Delete '{}'? (y/n) - {} will be freed",
-                entry.name,
+                entry.name.to_string_lossy(),
                 humansize::format_size(entry.size, humansize::BINARY)
             )
         } else {
@@ -151,8 +172,8 @@ mod tests {
     use crate::config::Config;
     use crate::patterns::PatternMatcher;
     use crate::tui::tree::{DirEntry, DirTree};
+    use foldhash::{HashMap, HashMapExt};
     use ratatui::{backend::TestBackend, Terminal};
-    use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -169,14 +190,12 @@ mod tests {
             root.clone(),
             vec![
                 DirEntry {
-                    path: root.join("target"),
                     name: "target".into(),
                     size: 4096,
                     is_dir: true,
                     is_temp: true,
                 },
                 DirEntry {
-                    path: root.join("main.rs"),
                     name: "main.rs".into(),
                     size: 20,
                     is_dir: false,
@@ -184,7 +203,7 @@ mod tests {
                 },
             ],
         );
-        App::new_with_tree(root, matcher, DirTree { children }, false)
+        App::new_with_tree(root, matcher, DirTree::from_children(children), false)
     }
 
     fn screen(app: &App) -> String {
@@ -232,5 +251,24 @@ mod tests {
         let output = screen(&app);
         assert!(output.contains("Sort: name"));
         assert!(output.contains("25.0%"));
+    }
+
+    #[test]
+    fn renders_only_rows_visible_near_selection() {
+        let mut app = app();
+        app.entries = Arc::new(
+            (0..50)
+                .map(|index| DirEntry {
+                    name: format!("entry-{index:02}").into(),
+                    size: index,
+                    is_dir: false,
+                    is_temp: false,
+                })
+                .collect(),
+        );
+        app.selected = 49;
+        let output = screen(&app);
+        assert!(output.contains("entry-49"));
+        assert!(!output.contains("entry-00"));
     }
 }

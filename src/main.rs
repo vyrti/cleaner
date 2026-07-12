@@ -15,18 +15,32 @@ mod stats;
 mod test_support;
 mod tui;
 
+#[cfg(all(feature = "mimalloc-allocator", not(feature = "system-allocator")))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use clap::Parser;
 use colored::Colorize;
 use config::Config;
-use crossbeam_channel::unbounded;
+use crossbeam_channel::bounded;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
+
+fn parse_thread_count(value: &str) -> Result<usize, String> {
+    let count = value
+        .parse::<usize>()
+        .map_err(|_| "threads must be a positive integer".to_string())?;
+    if !(1..=pool::MAX_WORKER_THREADS).contains(&count) {
+        return Err(format!(
+            "threads must be between 1 and {}",
+            pool::MAX_WORKER_THREADS
+        ));
+    }
+    Ok(count)
+}
 
 /// High-performance folder cleaner for development temp files
 #[derive(Parser, Debug)]
@@ -54,7 +68,7 @@ struct Args {
     verbose: bool,
 
     /// Number of threads for scanning and deletion (default: number of CPU cores)
-    #[arg(short = 'j', long = "threads")]
+    #[arg(short = 'j', long = "threads", value_parser = parse_thread_count)]
     threads: Option<usize>,
 
     /// Filter by modification time (only delete items older than N days)
@@ -129,7 +143,20 @@ fn main() {
     let folder = folder.canonicalize().unwrap_or(folder);
 
     // Load configuration (priority: env vars > config file > defaults)
-    let mut config = Config::load(args.config.as_deref());
+    let mut config = match Config::try_load(args.config.as_deref()) {
+        Ok(config) => config,
+        Err(error) => {
+            if args.json {
+                println!(
+                    "{{\"success\":false,\"error\":\"{}\"}}",
+                    error.replace('\\', "\\\\").replace('"', "\\\"")
+                );
+            } else {
+                eprintln!("{} {}", "Error:".red().bold(), error);
+            }
+            std::process::exit(1);
+        }
+    };
 
     // CLI args override config
     if let Some(days) = args.days {
@@ -139,6 +166,10 @@ fn main() {
 
     let config = Arc::new(config);
 
+    // Determine and configure worker count before any lazy global pool starts.
+    let num_threads = args.threads.unwrap_or_else(pool::default_thread_count);
+    pool::configure_scan_pool(num_threads);
+
     // Interactive TUI mode by default when run without folder/path arguments
     if is_interactive {
         if let Err(e) = tui::run(folder, config) {
@@ -147,9 +178,6 @@ fn main() {
         }
         return;
     }
-
-    // Determine thread count
-    let num_threads = args.threads.unwrap_or_else(num_cpus::get);
 
     if !args.json {
         // Print header
@@ -229,7 +257,7 @@ fn main() {
     let stats = Arc::new(stats::Stats::new());
 
     // Create channel for scan results
-    let (tx, rx) = unbounded();
+    let (tx, rx) = bounded(1024);
 
     // Start timer
     let start = Instant::now();
@@ -250,21 +278,29 @@ fn main() {
     };
 
     // Start scanner in separate thread
-    let scanner = scanner::Scanner::new(folder.clone(), num_threads, Arc::clone(&config));
+    let worker_pool = pool::build_worker_pool(num_threads, "cleaner-worker");
+    let scanner = scanner::Scanner::with_pool(
+        folder.clone(),
+        Arc::clone(&worker_pool),
+        Arc::clone(&config),
+    );
     let scan_handle = thread::spawn(move || scanner.scan(tx));
 
     // Create deleter
-    let deleter = deleter::Deleter::new(
+    let deleter = deleter::Deleter::with_pool(
         Arc::clone(&stats),
         !args.confirm,
         args.verbose && !args.json,
+        worker_pool,
     );
 
     // Process deletions (this blocks until scanner finishes and channel closes)
     deleter.process(rx);
 
     // Wait for scanner to complete
-    let scanned_count = scan_handle.join().unwrap();
+    let scan_summary = scan_handle.join().unwrap();
+    stats.add_errors(scan_summary.errors);
+    let scanned_count = scan_summary.entries;
 
     // Stop progress bar
     if let Some(ref p) = pb {
@@ -391,5 +427,11 @@ mod tests {
             json_escape_path(std::path::Path::new("a\\b\"c")),
             "a\\\\b\\\"c"
         );
+    }
+
+    #[test]
+    fn rejects_zero_and_excessive_thread_counts() {
+        assert!(Args::try_parse_from(["cleaner", "--threads", "0"]).is_err());
+        assert!(Args::try_parse_from(["cleaner", "--threads", "257"]).is_err());
     }
 }

@@ -1,40 +1,92 @@
 //! Parallel deletion engine
 //! Uses rayon for parallel file/directory removal with streaming processing
 
+#[cfg(test)]
+use crate::pool::build_worker_pool;
 use crate::scanner::ScanResult;
 use crate::stats::Stats;
 use crossbeam_channel::Receiver;
 use rayon::prelude::*;
+use rayon::ThreadPool;
 use std::fs;
+use std::path::Path;
 use std::sync::Arc;
+
+#[derive(Default)]
+struct DeleteOutcome {
+    directories: usize,
+    files: usize,
+    bytes: u64,
+    errors: Vec<String>,
+    verbose: Option<String>,
+}
+
+impl DeleteOutcome {
+    fn merge(&mut self, other: Self) {
+        self.directories = self.directories.saturating_add(other.directories);
+        self.files = self.files.saturating_add(other.files);
+        self.bytes = self.bytes.saturating_add(other.bytes);
+        self.errors.extend(other.errors);
+        if let Some(line) = other.verbose {
+            println!("{line}");
+        }
+    }
+}
 
 /// Parallel deletion worker
 pub struct Deleter {
     stats: Arc<Stats>,
     dry_run: bool,
     verbose: bool,
+    pool: Arc<ThreadPool>,
+    batch_size: usize,
 }
 
 impl Deleter {
-    pub fn new(stats: Arc<Stats>, dry_run: bool, verbose: bool) -> Self {
+    #[cfg(test)]
+    pub fn with_threads(
+        stats: Arc<Stats>,
+        dry_run: bool,
+        verbose: bool,
+        num_threads: usize,
+    ) -> Self {
+        Self::with_pool(
+            stats,
+            dry_run,
+            verbose,
+            build_worker_pool(num_threads, "cleaner-worker"),
+        )
+    }
+
+    pub fn with_pool(
+        stats: Arc<Stats>,
+        dry_run: bool,
+        verbose: bool,
+        pool: Arc<ThreadPool>,
+    ) -> Self {
+        let batch_size = pool
+            .current_num_threads()
+            .saturating_mul(32)
+            .clamp(64, 1024);
         Self {
             stats,
             dry_run,
             verbose,
+            pool,
+            batch_size,
         }
     }
 
     /// Process items as they arrive - streaming parallel deletion
     /// Uses a batching approach for efficient parallelism
     pub fn process(&self, rx: Receiver<ScanResult>) {
-        const BATCH_SIZE: usize = 64;
-        let mut batch = Vec::with_capacity(BATCH_SIZE);
+        let mut batch = Vec::with_capacity(self.batch_size);
 
         for item in rx {
             batch.push(item);
 
             // Process batch when full
-            if batch.len() >= BATCH_SIZE {
+            if batch.len() >= self.batch_size {
                 self.process_batch(&batch);
                 batch.clear();
             }
@@ -49,89 +101,130 @@ impl Deleter {
     /// Process a batch of items in parallel
     #[inline]
     fn process_batch(&self, batch: &[ScanResult]) {
-        batch.par_iter().for_each(|item| {
-            self.delete_item(item);
+        let outcomes: Vec<_> = self.pool.install(|| {
+            batch
+                .par_iter()
+                .map(|item| self.delete_item(item))
+                .collect()
         });
+        let mut batch_outcome = DeleteOutcome::default();
+        for outcome in outcomes {
+            batch_outcome.merge(outcome);
+        }
+        for error in &batch_outcome.errors {
+            eprintln!("{error}");
+        }
+        self.stats.add_batch(
+            batch_outcome.directories,
+            batch_outcome.files,
+            batch_outcome.bytes,
+            batch_outcome.errors.len(),
+        );
     }
 
-    /// Delete a single item - counts files and bytes for directories
-    fn delete_item(&self, item: &ScanResult) {
-        // For directories, count files inside and calculate size before deletion
-        let (file_count, size) = if item.is_dir {
+    fn delete_item(&self, item: &ScanResult) -> DeleteOutcome {
+        let mut outcome = if self.dry_run && item.is_dir {
             Self::count_dir_contents(&item.path)
+        } else if self.dry_run {
+            DeleteOutcome {
+                files: 1,
+                bytes: item.size,
+                ..DeleteOutcome::default()
+            }
+        } else if item.is_dir {
+            Self::remove_dir_counted(&item.path)
         } else {
-            (0, item.size)
+            match fs::remove_file(&item.path) {
+                Ok(()) => DeleteOutcome {
+                    files: 1,
+                    bytes: item.size,
+                    ..DeleteOutcome::default()
+                },
+                Err(error) => DeleteOutcome {
+                    errors: vec![format!("Error deleting {}: {error}", item.path.display())],
+                    ..DeleteOutcome::default()
+                },
+            }
         };
 
         if self.verbose {
             let type_str = if item.is_dir { "DIR " } else { "FILE" };
-            let size_str = humansize::format_size(size, humansize::BINARY);
-            println!("[{}] {} ({})", type_str, item.path.display(), size_str);
+            let size_str = humansize::format_size(outcome.bytes, humansize::BINARY);
+            outcome.verbose = Some(format!("[{type_str}] {} ({size_str})", item.path.display()));
         }
 
-        if self.dry_run {
-            if item.is_dir {
-                self.stats.add_directory();
-                // Add the files that would be deleted inside this directory
-                for _ in 0..file_count {
-                    self.stats.add_file();
-                }
-            } else {
-                self.stats.add_file();
-            }
-            self.stats.add_bytes(size);
-            return;
+        if item.is_dir && self.dry_run {
+            outcome.directories = 1;
         }
-
-        // Actually delete
-        let result = if item.is_dir {
-            fs::remove_dir_all(&item.path)
-        } else {
-            fs::remove_file(&item.path)
-        };
-
-        match result {
-            Ok(_) => {
-                if item.is_dir {
-                    self.stats.add_directory();
-                    // Add the files deleted inside this directory
-                    for _ in 0..file_count {
-                        self.stats.add_file();
-                    }
-                } else {
-                    self.stats.add_file();
-                }
-                self.stats.add_bytes(size);
-            }
-            Err(e) => {
-                self.stats.add_error();
-                eprintln!("Error deleting {}: {}", item.path.display(), e);
-            }
-        }
+        outcome
     }
 
-    /// Count files and total size inside a directory using fastwalk
-    fn count_dir_contents(path: &std::path::Path) -> (usize, u64) {
-        let mut file_count = 0usize;
-        let mut total_size = 0u64;
+    fn remove_dir_counted(root: &Path) -> DeleteOutcome {
+        let mut outcome = DeleteOutcome::default();
+        let mut stack = vec![(root.to_path_buf(), false, true)];
+        while let Some((path, visited, is_root)) = stack.pop() {
+            if visited {
+                match fs::remove_dir(&path) {
+                    Ok(()) if is_root => outcome.directories = 1,
+                    Ok(()) => {}
+                    Err(error) => outcome
+                        .errors
+                        .push(format!("Error deleting {}: {error}", path.display())),
+                }
+                continue;
+            }
+
+            stack.push((path.clone(), true, is_root));
+            match crate::fastwalk::read_dir_fast(&path) {
+                Ok(entries) => {
+                    for entry in entries {
+                        let child = path.join(&entry.name);
+                        if entry.is_dir && !entry.is_symlink {
+                            stack.push((child, false, false));
+                        } else {
+                            match fs::remove_file(&child) {
+                                Ok(()) => {
+                                    outcome.files = outcome.files.saturating_add(1);
+                                    outcome.bytes = outcome.bytes.saturating_add(entry.size);
+                                }
+                                Err(error) => outcome
+                                    .errors
+                                    .push(format!("Error deleting {}: {error}", child.display())),
+                            }
+                        }
+                    }
+                }
+                Err(error) => outcome
+                    .errors
+                    .push(format!("Error reading {}: {error}", path.display())),
+            }
+        }
+        outcome
+    }
+
+    fn count_dir_contents(path: &Path) -> DeleteOutcome {
+        let mut outcome = DeleteOutcome::default();
         let mut stack = vec![path.to_path_buf()];
 
         while let Some(current_path) = stack.pop() {
-            if let Ok(entries) = crate::fastwalk::read_dir_fast(&current_path) {
-                for e in entries {
-                    if e.is_dir {
-                        if !e.is_symlink {
-                            stack.push(current_path.join(&e.name));
+            match crate::fastwalk::read_dir_fast(&current_path) {
+                Ok(entries) => {
+                    for entry in entries {
+                        if entry.is_dir && !entry.is_symlink {
+                            stack.push(current_path.join(&entry.name));
+                        } else {
+                            outcome.files = outcome.files.saturating_add(1);
+                            outcome.bytes = outcome.bytes.saturating_add(entry.size);
                         }
-                    } else {
-                        file_count += 1;
-                        total_size += e.size;
                     }
                 }
+                Err(error) => outcome
+                    .errors
+                    .push(format!("Error reading {}: {error}", current_path.display())),
             }
         }
 
-        (file_count, total_size)
+        outcome
     }
 }
 
@@ -156,7 +249,7 @@ mod tests {
         })
         .unwrap();
         drop(tx);
-        Deleter::new(Arc::clone(&stats), true, false).process(rx);
+        Deleter::with_threads(Arc::clone(&stats), true, false, 2).process(rx);
         assert!(directory.exists());
         assert_eq!(
             (
@@ -190,7 +283,7 @@ mod tests {
         })
         .unwrap();
         drop(tx);
-        Deleter::new(Arc::clone(&stats), false, false).process(rx);
+        Deleter::with_threads(Arc::clone(&stats), false, false, 2).process(rx);
         assert!(!file.exists());
         assert!(!directory.exists());
         assert_eq!(
@@ -211,7 +304,7 @@ mod tests {
         })
         .unwrap();
         drop(tx);
-        Deleter::new(Arc::clone(&stats), false, false).process(rx);
+        Deleter::with_threads(Arc::clone(&stats), false, false, 2).process(rx);
         assert_eq!(stats.error_count(), 1);
         assert_eq!(stats.files(), 0);
         assert_eq!(stats.bytes(), 0);
@@ -231,8 +324,14 @@ mod tests {
             .unwrap();
         }
         drop(tx);
-        Deleter::new(Arc::clone(&stats), true, false).process(rx);
+        Deleter::with_threads(Arc::clone(&stats), true, false, 2).process(rx);
         assert_eq!(stats.files(), 70);
         assert_eq!(stats.bytes(), 70);
+    }
+
+    #[test]
+    fn deleter_uses_requested_thread_count() {
+        let deleter = Deleter::with_threads(Arc::new(Stats::new()), true, false, 3);
+        assert_eq!(deleter.pool.current_num_threads(), 3);
     }
 }

@@ -3,9 +3,11 @@
 use super::tree::{self, DirEntry, DirTree};
 use crate::deleter::Deleter;
 use crate::patterns::PatternMatcher;
+use crate::pool::SCAN_POOL;
 use crate::scanner::Scanner;
 use crate::stats::Stats;
-use crossbeam_channel::unbounded;
+use crossbeam_channel::bounded;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -22,7 +24,7 @@ pub enum SortMode {
 /// Deletion state for async deletion
 pub struct DeleteState {
     pub handle: JoinHandle<Result<(), String>>,
-    pub entry_name: String,
+    pub entry_name: OsString,
     pub entry_path: PathBuf,
     pub is_dir: bool,
     pub entry_size: u64,
@@ -31,15 +33,24 @@ pub struct DeleteState {
 /// Clean state for async cleaning
 pub struct CleanState {
     pub handle: JoinHandle<(usize, usize, u64)>, // (dirs, files, bytes)
+    pub cancelled: Arc<AtomicBool>,
+}
+
+pub struct RebuildState {
+    pub handle: JoinHandle<DirTree>,
+    pub completion_message: String,
+    pub progress: Arc<tree::ScanProgress>,
+    pub cancelled: Arc<AtomicBool>,
+    pub restore_path: PathBuf,
+    pub restore_name: Option<OsString>,
 }
 
 pub struct App {
     pub root: PathBuf,
     pub current_path: PathBuf,
     pub path_stack: Vec<PathBuf>,
-    pub entries: Vec<DirEntry>,
+    pub entries: Arc<Vec<DirEntry>>,
     pub selected: usize,
-    pub scroll_offset: usize,
     pub sort_mode: SortMode,
     pub confirm_delete: bool,
     pub confirm_clean: bool,
@@ -55,8 +66,8 @@ pub struct App {
     delete_state: Option<DeleteState>,
     /// Active clean thread
     clean_state: Option<CleanState>,
-    /// Last entered folder name (for cursor restoration on go_back)
-    last_entered_folder: Option<String>,
+    rebuild_state: Option<RebuildState>,
+    clean_preview: Option<(usize, usize, u64)>,
 }
 
 impl App {
@@ -66,9 +77,8 @@ impl App {
             current_path: root.clone(),
             root,
             path_stack: Vec::new(),
-            entries: Vec::new(),
+            entries: Arc::new(Vec::new()),
             selected: 0,
-            scroll_offset: 0,
             sort_mode: SortMode::Size,
             confirm_delete: false,
             confirm_clean: false,
@@ -82,7 +92,8 @@ impl App {
             tree: None,
             delete_state: None,
             clean_state: None,
-            last_entered_folder: None,
+            rebuild_state: None,
+            clean_preview: None,
         }
     }
 
@@ -96,9 +107,8 @@ impl App {
             current_path: root.clone(),
             root,
             path_stack: Vec::new(),
-            entries: Vec::new(),
+            entries: Arc::new(Vec::new()),
             selected: 0,
-            scroll_offset: 0,
             sort_mode: SortMode::Size,
             confirm_delete: false,
             confirm_clean: false,
@@ -112,7 +122,8 @@ impl App {
             tree: Some(tree),
             delete_state: None,
             clean_state: None,
-            last_entered_folder: None,
+            rebuild_state: None,
+            clean_preview: None,
         };
         app.load_current_dir();
         app
@@ -120,7 +131,7 @@ impl App {
 
     /// Check if currently deleting or cleaning
     pub fn is_busy(&self) -> bool {
-        self.delete_state.is_some() || self.clean_state.is_some()
+        self.delete_state.is_some() || self.clean_state.is_some() || self.rebuild_state.is_some()
     }
 
     /// Check if currently deleting
@@ -131,6 +142,13 @@ impl App {
     /// Check if currently cleaning
     pub fn is_cleaning(&self) -> bool {
         self.clean_state.is_some()
+    }
+
+    pub fn rebuild_progress(&self) -> Option<(u8, usize, usize)> {
+        self.rebuild_state.as_ref().map(|state| {
+            let (current, total) = state.progress.get_stage_progress();
+            (state.progress.get_phase(), current, total)
+        })
     }
 
     #[allow(dead_code)]
@@ -151,10 +169,9 @@ impl App {
         self.load_current_dir_with_selection(None);
     }
 
-    fn load_current_dir_with_selection(&mut self, select_name: Option<&str>) {
-        if let Some(ref tree) = self.tree {
-            self.entries = tree.get_children(&self.current_path);
-            self.apply_sort();
+    fn load_current_dir_with_selection(&mut self, select_name: Option<&OsStr>) {
+        if let Some(ref mut tree) = self.tree {
+            self.entries = tree.get_children(&self.current_path, self.sort_mode == SortMode::Name);
             self.total_size = self.entries.iter().map(|e| e.size).sum();
         }
 
@@ -171,36 +188,32 @@ impl App {
             self.selected = 0;
         }
 
-        self.scroll_offset = 0;
         self.confirm_delete = false;
         self.confirm_clean = false;
+        self.clean_preview = None;
     }
 
-    fn rebuild_tree(&mut self) {
+    fn start_rebuild(&mut self, completion_message: String) {
+        let root = self.root.clone();
+        let matcher = Arc::clone(&self.matcher);
+        let force = self.force;
         let progress = Arc::new(tree::ScanProgress::new());
         let cancelled = Arc::new(AtomicBool::new(false));
-        self.tree = Some(DirTree::build_with_progress(
-            &self.root,
-            &self.matcher,
+        let worker_progress = Arc::clone(&progress);
+        let worker_cancelled = Arc::clone(&cancelled);
+        let restore_path = self.current_path.clone();
+        let restore_name = self.selected_entry().map(|entry| entry.name.clone());
+        let handle = thread::spawn(move || {
+            DirTree::build_with_progress(&root, &matcher, worker_progress, worker_cancelled, force)
+        });
+        self.rebuild_state = Some(RebuildState {
+            handle,
+            completion_message,
             progress,
             cancelled,
-            self.force,
-        ));
-        self.load_current_dir();
-    }
-
-    #[allow(dead_code)]
-    fn rebuild_tree_with_selection(&mut self, select_name: Option<&str>) {
-        let progress = Arc::new(tree::ScanProgress::new());
-        let cancelled = Arc::new(AtomicBool::new(false));
-        self.tree = Some(DirTree::build_with_progress(
-            &self.root,
-            &self.matcher,
-            progress,
-            cancelled,
-            self.force,
-        ));
-        self.load_current_dir_with_selection(select_name);
+            restore_path,
+            restore_name,
+        });
     }
 
     #[allow(dead_code)]
@@ -209,13 +222,6 @@ impl App {
             self.build_tree();
         } else {
             self.load_current_dir();
-        }
-    }
-
-    fn apply_sort(&mut self) {
-        match self.sort_mode {
-            SortMode::Size => tree::sort_by_size(&mut self.entries),
-            SortMode::Name => tree::sort_by_name(&mut self.entries),
         }
     }
 
@@ -237,7 +243,6 @@ impl App {
 
     pub fn go_top(&mut self) {
         self.selected = 0;
-        self.scroll_offset = 0;
         self.confirm_delete = false;
         self.confirm_clean = false;
     }
@@ -252,15 +257,15 @@ impl App {
         if self.is_busy() {
             return;
         }
-        if let Some(entry) = self.entries.get(self.selected).cloned() {
-            if entry.is_dir {
-                if entry.name == ".." {
+        if let Some(entry) = self.entries.get(self.selected) {
+            let is_dir = entry.is_dir;
+            let name = entry.name.clone();
+            if is_dir {
+                if name == ".." {
                     self.go_back();
                 } else {
-                    // Remember the folder name we're entering
-                    self.last_entered_folder = Some(entry.name.clone());
                     self.path_stack.push(self.current_path.clone());
-                    self.current_path = entry.path.clone();
+                    self.current_path.push(name);
                     self.load_current_dir();
                 }
             }
@@ -273,10 +278,7 @@ impl App {
         }
         if let Some(prev) = self.path_stack.pop() {
             // Get current folder name to restore cursor position
-            let current_name = self
-                .current_path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string());
+            let current_name = self.current_path.file_name().map(OsStr::to_os_string);
 
             self.current_path = prev;
             self.load_current_dir_with_selection(current_name.as_deref());
@@ -286,11 +288,12 @@ impl App {
     }
 
     pub fn toggle_sort(&mut self) {
+        let selected_name = self.selected_entry().map(|entry| entry.name.clone());
         self.sort_mode = match self.sort_mode {
             SortMode::Size => SortMode::Name,
             SortMode::Name => SortMode::Size,
         };
-        self.apply_sort();
+        self.load_current_dir_with_selection(selected_name.as_deref());
     }
 
     pub fn toggle_delete_confirm(&mut self) {
@@ -312,6 +315,11 @@ impl App {
         }
         self.confirm_clean = !self.confirm_clean;
         self.confirm_delete = false;
+        self.clean_preview = if self.confirm_clean {
+            Some(self.compute_current_temp_stats())
+        } else {
+            None
+        };
     }
 
     fn set_status(&mut self, msg: String) {
@@ -331,7 +339,7 @@ impl App {
                     Ok(Ok(())) => {
                         self.set_status(format!(
                             "Deleted: {} ({})",
-                            state.entry_name,
+                            state.entry_name.to_string_lossy(),
                             humansize::format_size(state.entry_size, humansize::BINARY)
                         ));
 
@@ -341,7 +349,7 @@ impl App {
                         }
 
                         // Reload and try to keep cursor near deleted item
-                        self.load_current_dir_with_selection(Some(&deleted_name));
+                        self.load_current_dir_with_selection(Some(deleted_name.as_os_str()));
                     }
                     Ok(Err(e)) => {
                         self.set_status(format!("Error: {}", e));
@@ -360,14 +368,13 @@ impl App {
             if state.handle.is_finished() {
                 match state.handle.join() {
                     Ok((dirs, files, bytes)) => {
-                        self.set_status(format!(
+                        let message = format!(
                             "Cleaned: {} dirs, {} files ({})",
                             dirs,
                             files,
                             humansize::format_size(bytes, humansize::BINARY)
-                        ));
-                        // Full rebuild needed after clean
-                        self.rebuild_tree();
+                        );
+                        self.start_rebuild(message);
                     }
                     Err(_) => {
                         self.set_status("Error: clean thread panicked".to_string());
@@ -375,6 +382,31 @@ impl App {
                 }
             } else {
                 self.clean_state = Some(state);
+            }
+        }
+
+        if let Some(state) = self.rebuild_state.take() {
+            if state.handle.is_finished() {
+                match state.handle.join() {
+                    Ok(tree) => {
+                        self.tree = Some(tree);
+                        if self
+                            .tree
+                            .as_ref()
+                            .is_some_and(|tree| tree.children.contains_key(&state.restore_path))
+                        {
+                            self.current_path = state.restore_path;
+                        } else {
+                            self.current_path = self.root.clone();
+                            self.path_stack.clear();
+                        }
+                        self.load_current_dir_with_selection(state.restore_name.as_deref());
+                        self.set_status(state.completion_message);
+                    }
+                    Err(_) => self.set_status("Error: rebuild thread panicked".to_string()),
+                }
+            } else {
+                self.rebuild_state = Some(state);
             }
         }
 
@@ -398,29 +430,45 @@ impl App {
             return;
         }
 
-        if let Some(entry) = self.entries.get(self.selected).cloned() {
+        if let Some(entry) = self.entries.get(self.selected) {
             if entry.name == ".." {
                 self.confirm_delete = false;
                 return;
             }
 
-            let path = entry.path.clone();
+            let entry_name = entry.name.clone();
+            let entry_size = entry.size;
             let is_dir = entry.is_dir;
+            let path = self.current_path.join(&entry_name);
 
-            let handle = thread::spawn(move || {
-                if is_dir {
-                    Self::remove_dir_fast(path)
-                } else {
-                    fs::remove_file(&path).map_err(|e| e.to_string())
+            if !is_dir {
+                match fs::remove_file(&path) {
+                    Ok(()) => {
+                        self.set_status(format!(
+                            "Deleted: {} ({})",
+                            entry_name.to_string_lossy(),
+                            humansize::format_size(entry_size, humansize::BINARY)
+                        ));
+                        if let Some(tree) = &mut self.tree {
+                            tree.delete_entry(&path, false);
+                        }
+                        self.load_current_dir_with_selection(Some(entry_name.as_os_str()));
+                    }
+                    Err(error) => self.set_status(format!("Error: {error}")),
                 }
-            });
+                self.confirm_delete = false;
+                return;
+            }
+
+            let worker_path = path.clone();
+            let handle = thread::spawn(move || Self::remove_dir_fast(worker_path));
 
             self.delete_state = Some(DeleteState {
                 handle,
-                entry_name: entry.name.clone(),
-                entry_path: entry.path.clone(),
-                is_dir: entry.is_dir,
-                entry_size: entry.size,
+                entry_name,
+                entry_path: path,
+                is_dir,
+                entry_size,
             });
         }
         self.confirm_delete = false;
@@ -433,30 +481,46 @@ impl App {
         }
 
         let root = self.current_path.clone();
+        let config = self.matcher.config();
+        let num_threads = SCAN_POOL.current_num_threads();
+        let worker_pool = crate::pool::build_worker_pool(num_threads, "cleaner-worker");
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = Arc::clone(&cancelled);
 
         let handle = thread::spawn(move || {
             let stats = Arc::new(Stats::new());
-            let config = crate::config::Config::default();
-            let config = Arc::new(config);
 
-            let (tx, rx) = unbounded();
-            let scanner = Scanner::new(root, num_cpus::get(), config);
+            let (tx, rx) = bounded(1024);
+            let scanner = Scanner::with_pool(root, Arc::clone(&worker_pool), config);
 
-            // Run scanner in this thread
-            let _scanned = scanner.scan(tx);
+            // Scan and delete concurrently while the bounded channel applies
+            // backpressure if deletion falls behind discovery.
+            let scan_handle =
+                thread::spawn(move || scanner.scan_with_cancel(tx, &worker_cancelled));
 
-            // Process deletions
-            let deleter = Deleter::new(Arc::clone(&stats), false, false);
+            let deleter = Deleter::with_pool(Arc::clone(&stats), false, false, worker_pool);
             deleter.process(rx);
+            if let Ok(summary) = scan_handle.join() {
+                stats.add_errors(summary.errors);
+            }
 
             (stats.directories(), stats.files(), stats.bytes())
         });
 
-        self.clean_state = Some(CleanState { handle });
+        self.clean_state = Some(CleanState { handle, cancelled });
         self.confirm_clean = false;
     }
 
     pub fn current_temp_stats(&self) -> (usize, usize, u64) {
+        if self.confirm_clean {
+            self.clean_preview
+                .unwrap_or_else(|| self.compute_current_temp_stats())
+        } else {
+            self.compute_current_temp_stats()
+        }
+    }
+
+    fn compute_current_temp_stats(&self) -> (usize, usize, u64) {
         if let Some(ref tree) = self.tree {
             tree.get_temp_stats(&self.current_path)
         } else {
@@ -468,8 +532,7 @@ impl App {
         if self.is_busy() {
             return;
         }
-        self.rebuild_tree();
-        self.set_status("Refreshed".to_string());
+        self.start_rebuild("Refreshed".to_string());
     }
 
     pub fn selected_entry(&self) -> Option<&DirEntry> {
@@ -483,6 +546,26 @@ impl App {
         } else {
             self.disk_total = 0;
             self.disk_free = 0;
+        }
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        if let Some(state) = self.rebuild_state.take() {
+            state
+                .cancelled
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = state.handle.join();
+        }
+        if let Some(state) = self.clean_state.take() {
+            state
+                .cancelled
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = state.handle.join();
+        }
+        if let Some(state) = self.delete_state.take() {
+            let _ = state.handle.join();
         }
     }
 }
@@ -573,7 +656,7 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::test_support::TempDir;
-    use std::collections::HashMap;
+    use foldhash::{HashMap, HashMapExt};
     use std::time::Duration;
 
     fn matcher() -> Arc<PatternMatcher> {
@@ -585,9 +668,8 @@ mod tests {
         })))
     }
 
-    fn entry(path: PathBuf, name: &str, size: u64, is_dir: bool, is_temp: bool) -> DirEntry {
+    fn entry(_path: PathBuf, name: &str, size: u64, is_dir: bool, is_temp: bool) -> DirEntry {
         DirEntry {
-            path,
             name: name.into(),
             size,
             is_dir,
@@ -613,7 +695,7 @@ mod tests {
                 entry(folder.join("nested.pyc"), "nested.pyc", 8, false, true),
             ],
         );
-        App::new_with_tree(root, matcher(), DirTree { children }, false)
+        App::new_with_tree(root, matcher(), DirTree::from_children(children), false)
     }
 
     fn select(app: &mut App, name: &str) {
@@ -659,6 +741,7 @@ mod tests {
         assert!(app.confirm_delete);
         app.toggle_clean_confirm();
         assert!(app.confirm_clean);
+        assert!(app.clean_preview.is_some());
         assert!(!app.confirm_delete);
         assert_eq!(app.current_temp_stats(), (0, 2, 11));
     }
@@ -687,9 +770,8 @@ mod tests {
         let mut app = app_with_tree(&temp);
         select(&mut app, "cache.pyc");
         app.delete_selected();
-        assert!(app.is_busy());
-        assert!(app.is_deleting());
-        wait_until_idle(&mut app);
+        assert!(!app.is_busy());
+        assert!(!app.is_deleting());
         assert!(!file.exists());
         assert!(!app.entries.iter().any(|e| e.name == "cache.pyc"));
         assert!(app
@@ -743,6 +825,7 @@ mod tests {
             .starts_with("Cleaned:"));
 
         app.refresh();
+        wait_until_idle(&mut app);
         assert_eq!(app.status_message.as_deref(), Some("Refreshed"));
     }
 

@@ -5,6 +5,11 @@ edition = "2021"
 description = "Fastest disk scanner and cleaner"
 license = "MIT OR Apache-2.0"
 
+[features]
+default = ["mimalloc-allocator"]
+mimalloc-allocator = ["dep:mimalloc"]
+system-allocator = []
+
 [dependencies]
 # CLI parsing
 clap = { version = "4", features = ["derive"] }
@@ -15,8 +20,8 @@ rayon = "1.12"
 # Lock-free channels for producer-consumer
 crossbeam-channel = "0.5"
 
-# SIMD-accelerated byte searching
-memchr = "2"
+# Fast randomized hashing for in-memory filesystem paths
+foldhash = "0.2"
 
 # Progress indicators
 indicatif = "0.18"
@@ -26,9 +31,6 @@ humansize = "2"
 
 # Colored terminal output
 colored = "3"
-
-# CPU detection
-num_cpus = "1.17"
 
 # Config parsing
 serde = { version = "1", features = ["derive"] }
@@ -45,7 +47,7 @@ crossterm = "0.29"
 libc = "0.2"
 
 # High-performance allocator
-mimalloc = { version = "0.1", default-features = false }
+mimalloc = { version = "0.1", default-features = false, optional = true }
 
 # Linux and FreeBSD file descriptor APIs
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]

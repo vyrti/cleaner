@@ -4,10 +4,13 @@
 use crate::config::Config;
 use crate::fastwalk;
 use crate::patterns::PatternMatcher;
-use crate::pool::SCAN_POOL;
+#[cfg(test)]
+use crate::pool::build_worker_pool;
 use crossbeam_channel::Sender;
+use rayon::ThreadPool;
 #[allow(unused_imports)]
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -20,6 +23,18 @@ fn passes_age_filter(path: &Path, days: Option<u64>) -> bool {
         .is_some_and(|elapsed| elapsed.as_secs() > days.saturating_mul(24 * 60 * 60))
 }
 
+fn matched_file_size(path: &Path, days: Option<u64>) -> Option<u64> {
+    let metadata = std::fs::metadata(path);
+    let Some(days) = days else {
+        return Some(metadata.map(|value| value.len()).unwrap_or(0));
+    };
+
+    let metadata = metadata.ok()?;
+    let modified = metadata.modified().ok()?;
+    let elapsed = modified.elapsed().ok()?;
+    (elapsed.as_secs() > days.saturating_mul(24 * 60 * 60)).then_some(metadata.len())
+}
+
 /// Result of scanning - a path to delete and whether it's a directory
 #[derive(Debug, Clone)]
 pub struct ScanResult {
@@ -28,31 +43,50 @@ pub struct ScanResult {
     pub size: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScanSummary {
+    pub entries: usize,
+    pub errors: usize,
+    pub receiver_closed: bool,
+}
+
 /// Parallel directory scanner
 pub struct Scanner {
-    matcher: Arc<PatternMatcher>,
+    matcher: PatternMatcher,
     config: Arc<Config>,
     root: PathBuf,
-    #[allow(dead_code)]
-    num_threads: usize,
+    pool: Arc<ThreadPool>,
 }
 
 impl Scanner {
+    #[cfg(test)]
     pub fn new(root: PathBuf, num_threads: usize, config: Arc<Config>) -> Self {
+        Self::with_pool(
+            root,
+            build_worker_pool(num_threads, "cleaner-worker"),
+            config,
+        )
+    }
+
+    pub fn with_pool(root: PathBuf, pool: Arc<ThreadPool>, config: Arc<Config>) -> Self {
         Self {
-            matcher: Arc::new(PatternMatcher::new(Arc::clone(&config))),
+            matcher: PatternMatcher::new(Arc::clone(&config)),
             config,
             root,
-            num_threads,
+            pool,
         }
     }
 
     /// Scan directory and send matching paths to channel
     /// Returns total number of entries scanned
-    pub fn scan(&self, tx: Sender<ScanResult>) -> usize {
-        let matcher = Arc::clone(&self.matcher);
-        let config_clone = Arc::clone(&self.config);
-        let scanned = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    pub fn scan(&self, tx: Sender<ScanResult>) -> ScanSummary {
+        self.scan_with_cancel(tx, &AtomicBool::new(false))
+    }
+
+    pub fn scan_with_cancel(&self, tx: Sender<ScanResult>, cancelled: &AtomicBool) -> ScanSummary {
+        let scanned = std::sync::atomic::AtomicUsize::new(0);
+        let errors = std::sync::atomic::AtomicUsize::new(0);
+        let receiver_closed = AtomicBool::new(false);
 
         // macOS Docker exclusion: sparse disk image reports wrong sizes
         #[cfg(target_os = "macos")]
@@ -150,135 +184,149 @@ impl Scanner {
             protected_paths.push(PathBuf::from("C:\\System Volume Information"));
         }
 
-        let root_clone = self.root.clone();
-        let scanned_clone = Arc::clone(&scanned);
-        let docker_path_arc = Arc::new(docker_path);
-        let protected_paths_arc = Arc::new(protected_paths);
-        let root_arc = Arc::new(self.root.clone());
+        if self.config.force {
+            protected_paths.clear();
+        } else {
+            protected_paths.retain(|path| !self.root.starts_with(path));
+        }
 
-        SCAN_POOL.scope(|s| {
-            walk_scanner(
-                s,
-                root_clone,
-                matcher,
-                config_clone,
-                tx,
-                scanned_clone,
-                docker_path_arc,
-                protected_paths_arc,
-                root_arc,
-            );
+        let context = ScanContext {
+            matcher: &self.matcher,
+            config: &self.config,
+            tx: &tx,
+            scanned: &scanned,
+            docker_path: &docker_path,
+            protected_paths: &protected_paths,
+            root: &self.root,
+            cancelled,
+            errors: &errors,
+            receiver_closed: &receiver_closed,
+        };
+
+        self.pool.scope(|s| {
+            walk_scanner(s, self.root.clone(), false, &context);
         });
 
-        Arc::try_unwrap(scanned).unwrap().into_inner()
+        ScanSummary {
+            entries: scanned.into_inner(),
+            errors: errors.into_inner(),
+            receiver_closed: receiver_closed.into_inner(),
+        }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn walk_scanner(
-    scope: &rayon::Scope<'_>,
+struct ScanContext<'a> {
+    matcher: &'a PatternMatcher,
+    config: &'a Config,
+    tx: &'a Sender<ScanResult>,
+    scanned: &'a std::sync::atomic::AtomicUsize,
+    docker_path: &'a Option<PathBuf>,
+    protected_paths: &'a [PathBuf],
+    root: &'a Path,
+    cancelled: &'a AtomicBool,
+    errors: &'a std::sync::atomic::AtomicUsize,
+    receiver_closed: &'a AtomicBool,
+}
+
+fn walk_scanner<'scope>(
+    scope: &rayon::Scope<'scope>,
     dir: PathBuf,
-    matcher: Arc<PatternMatcher>,
-    config: Arc<Config>,
-    tx: Sender<ScanResult>,
-    scanned: Arc<std::sync::atomic::AtomicUsize>,
-    docker_path: Arc<Option<PathBuf>>,
-    protected_paths: Arc<Vec<PathBuf>>,
-    root: Arc<PathBuf>,
+    in_protected_dir: bool,
+    context: &'scope ScanContext<'scope>,
 ) {
-    let entries = match fastwalk::read_dir_fast(&dir) {
+    if context.cancelled.load(Ordering::Relaxed) {
+        return;
+    }
+    let entries = match fastwalk::read_dir_types(&dir) {
         Ok(e) => e,
-        Err(_) => return,
+        Err(_) => {
+            context.errors.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
     };
+    context.scanned.fetch_add(entries.len(), Ordering::Relaxed);
 
     let mut subdirs = Vec::with_capacity(8);
 
     for e in entries {
-        scanned.fetch_add(1, Ordering::Relaxed);
-
-        let path = dir.join(&e.name);
-
-        // 1. Skip Docker container on macOS
-        if let Some(ref docker) = *docker_path {
-            if path.starts_with(docker) {
-                continue;
-            }
+        if context.cancelled.load(Ordering::Relaxed) {
+            return;
         }
-
-        // Calculate if path is in a protected system directory (where we won't auto-delete)
-        let in_protected = !config.force
-            && protected_paths
-                .iter()
-                .any(|p| path.starts_with(p) && !root.starts_with(p));
-
-        // 3. Skip macOS OS mounts to prevent duplicate scans
-        #[cfg(target_os = "macos")]
-        {
-            if (path.starts_with("/System/Volumes") || path == Path::new("/System/Volumes"))
-                && !root.starts_with("/System/Volumes")
-            {
-                continue;
-            }
-            if (path.starts_with("/Volumes") || path == Path::new("/Volumes"))
-                && !root.starts_with("/Volumes")
-            {
-                continue;
-            }
-        }
-
         if e.is_dir {
-            if !in_protected && matcher.is_temp_directory(&e.name) {
-                let should_delete = passes_age_filter(&path, config.days);
+            let path = dir.join(&e.name);
+            if context
+                .docker_path
+                .as_ref()
+                .is_some_and(|docker| path.starts_with(docker))
+            {
+                continue;
+            }
+
+            #[cfg(target_os = "macos")]
+            {
+                if path.starts_with("/System/Volumes")
+                    && !context.root.starts_with("/System/Volumes")
+                {
+                    continue;
+                }
+                if path.starts_with("/Volumes") && !context.root.starts_with("/Volumes") {
+                    continue;
+                }
+            }
+
+            let in_protected = in_protected_dir
+                || context
+                    .protected_paths
+                    .iter()
+                    .any(|protected| path.starts_with(protected));
+            if !in_protected && context.matcher.is_temp_directory(&e.name) {
+                let should_delete = passes_age_filter(&path, context.config.days);
 
                 if should_delete {
-                    let _ = tx.send(ScanResult {
-                        path,
-                        is_dir: true,
-                        size: 0,
-                    });
+                    if context
+                        .tx
+                        .send(ScanResult {
+                            path,
+                            is_dir: true,
+                            size: 0,
+                        })
+                        .is_err()
+                    {
+                        context.receiver_closed.store(true, Ordering::Relaxed);
+                        context.cancelled.store(true, Ordering::Relaxed);
+                        return;
+                    }
                     continue;
                 }
             }
 
             if !e.is_symlink {
-                subdirs.push(path);
+                subdirs.push((path, in_protected));
             }
-        } else {
-            if !in_protected && matcher.is_temp_file(&e.name) {
-                let should_delete = passes_age_filter(&path, config.days);
-
-                if should_delete {
-                    let _ = tx.send(ScanResult {
+        } else if !in_protected_dir && context.matcher.is_temp_file(&e.name) {
+            let path = dir.join(&e.name);
+            if let Some(size) = matched_file_size(&path, context.config.days) {
+                if context
+                    .tx
+                    .send(ScanResult {
                         path,
                         is_dir: false,
-                        size: e.size,
-                    });
+                        size,
+                    })
+                    .is_err()
+                {
+                    context.receiver_closed.store(true, Ordering::Relaxed);
+                    context.cancelled.store(true, Ordering::Relaxed);
+                    return;
                 }
             }
         }
     }
 
     // Spawn sub-tasks in parallel using rayon work-stealing
-    for subdir in subdirs {
-        let matcher = Arc::clone(&matcher);
-        let config = Arc::clone(&config);
-        let tx = tx.clone();
-        let scanned = Arc::clone(&scanned);
-        let docker_path = Arc::clone(&docker_path);
-        let protected_paths = Arc::clone(&protected_paths);
-        let root = Arc::clone(&root);
+    for (subdir, protected) in subdirs {
         scope.spawn(move |s| {
-            walk_scanner(
-                s,
-                subdir,
-                matcher,
-                config,
-                tx,
-                scanned,
-                docker_path,
-                protected_paths,
-                root,
-            );
+            walk_scanner(s, subdir, protected, context);
         });
     }
 }
@@ -319,7 +367,50 @@ mod tests {
         assert!(results
             .iter()
             .any(|r| r.path == temp.join("target") && r.is_dir));
-        assert_eq!(scanned, 5);
+        assert_eq!(scanned.entries, 5);
+        assert_eq!(scanned.errors, 0);
+    }
+
+    #[test]
+    fn scanner_uses_requested_thread_count() {
+        let temp = TempDir::new("scanner-threads");
+        let scanner = Scanner::new(temp.path().to_path_buf(), 3, config(None));
+        assert_eq!(scanner.pool.current_num_threads(), 3);
+    }
+
+    #[test]
+    fn scanner_reports_read_and_receiver_errors() {
+        let temp = TempDir::new("scanner-errors");
+        let (tx, rx) = unbounded();
+        drop(rx);
+        temp.write("match.pyc", b"data");
+        let summary = Scanner::new(temp.path().to_path_buf(), 1, config(None)).scan(tx);
+        assert!(summary.receiver_closed);
+
+        let (tx, _rx) = unbounded();
+        let summary = Scanner::new(temp.join("missing"), 1, config(None)).scan(tx);
+        assert_eq!(summary.errors, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scanner_traverses_non_utf8_directories() {
+        use std::os::unix::ffi::OsStringExt;
+        let temp = TempDir::new("scanner-non-utf8");
+        let directory = temp
+            .path()
+            .join(std::ffi::OsString::from_vec(b"dir-\xff".to_vec()));
+        if let Err(error) = std::fs::create_dir(&directory) {
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                return;
+            }
+            panic!("failed to create non-UTF-8 test directory: {error}");
+        }
+        std::fs::write(directory.join("inside.pyc"), b"123").unwrap();
+        let (tx, rx) = unbounded();
+        let summary = Scanner::new(temp.path().to_path_buf(), 1, config(None)).scan(tx);
+        assert_eq!(summary.errors, 0);
+        assert!(rx.iter().any(|result| result.path.ends_with("inside.pyc")));
     }
 
     #[test]

@@ -1,7 +1,26 @@
+use crossbeam_channel::Sender;
+use foldhash::{HashMap, HashMapExt};
 use rayon::ThreadPool;
-use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
+// Eight covers the common small-directory case without reserving a large block
+// for every empty/near-empty directory; Vec grows geometrically for wide ones.
+pub(super) const INITIAL_DIRECTORY_CAPACITY: usize = 8;
+type ProgressCallback = Arc<dyn Fn(usize, usize, u64) + Send + Sync>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetadataMode {
+    TypesOnly,
+    WithSizes,
+}
+
+pub struct WalkOutput<T> {
+    pub entries: HashMap<PathBuf, Vec<T>>,
+    pub errors: usize,
+}
 
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 mod linux;
@@ -10,35 +29,43 @@ mod mac;
 
 #[derive(Debug, Clone)]
 pub struct RawEntry {
-    pub name: String,
+    pub name: OsString,
     pub size: u64,
     pub is_dir: bool,
     pub is_symlink: bool,
 }
 
 pub fn read_dir_fast(path: &Path) -> std::io::Result<Vec<RawEntry>> {
+    read_dir(path, MetadataMode::WithSizes)
+}
+
+pub fn read_dir_types(path: &Path) -> std::io::Result<Vec<RawEntry>> {
+    read_dir(path, MetadataMode::TypesOnly)
+}
+
+fn read_dir(path: &Path, metadata_mode: MetadataMode) -> std::io::Result<Vec<RawEntry>> {
     #[cfg(target_os = "macos")]
     {
-        mac::read_dir_bulk(path)
+        mac::read_dir_bulk(path, metadata_mode)
     }
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     {
-        linux::read_dir_fstatat(path)
+        linux::read_dir_fstatat(path, metadata_mode)
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "freebsd")))]
     {
         let read_dir = std::fs::read_dir(path)?;
-        let mut result = Vec::with_capacity(256);
+        let mut result = Vec::with_capacity(INITIAL_DIRECTORY_CAPACITY);
         for entry in read_dir {
             let entry = entry?;
             let file_type = entry.file_type()?;
-            let size = if file_type.is_file() {
+            let size = if file_type.is_file() && metadata_mode == MetadataMode::WithSizes {
                 entry.metadata()?.len()
             } else {
                 0
             };
             result.push(RawEntry {
-                name: entry.file_name().to_string_lossy().into_owned(),
+                name: entry.file_name(),
                 size,
                 is_dir: file_type.is_dir(),
                 is_symlink: file_type.is_symlink(),
@@ -48,45 +75,91 @@ pub fn read_dir_fast(path: &Path) -> std::io::Result<Vec<RawEntry>> {
     }
 }
 
+#[cfg(test)]
 pub fn walk_parallel(
     root: PathBuf,
     pool: &ThreadPool,
     skip_check: Arc<dyn Fn(&Path) -> bool + Send + Sync>,
-    progress_callback: Option<Arc<dyn Fn(bool, u64) + Send + Sync>>,
+    progress_callback: Option<ProgressCallback>,
 ) -> HashMap<PathBuf, Vec<RawEntry>> {
-    let results: Arc<Mutex<HashMap<PathBuf, Vec<RawEntry>>>> =
-        Arc::new(Mutex::new(HashMap::with_capacity(16384)));
-
-    {
-        let results = Arc::clone(&results);
-        let skip_check = Arc::clone(&skip_check);
-        let progress_callback = progress_callback.clone();
-        pool.scope(|s| {
-            walk_recursive(s, root, results, skip_check, progress_callback);
-        });
-    }
-
-    Arc::try_unwrap(results).unwrap().into_inner().unwrap()
+    walk_parallel_mapped(root, pool, skip_check, progress_callback, &|_, entries| {
+        entries
+    })
+    .entries
 }
 
-fn walk_recursive(
-    scope: &rayon::Scope<'_>,
-    dir: PathBuf,
-    results: Arc<Mutex<HashMap<PathBuf, Vec<RawEntry>>>>,
+pub fn walk_parallel_mapped<T, F>(
+    root: PathBuf,
+    pool: &ThreadPool,
     skip_check: Arc<dyn Fn(&Path) -> bool + Send + Sync>,
-    progress_callback: Option<Arc<dyn Fn(bool, u64) + Send + Sync>>,
-) {
+    progress_callback: Option<ProgressCallback>,
+    mapper: &F,
+) -> WalkOutput<T>
+where
+    T: Send + 'static,
+    F: Fn(&Path, Vec<RawEntry>) -> Vec<T> + Sync,
+{
+    let (results_tx, results_rx) = crossbeam_channel::bounded(1024);
+    let errors = AtomicUsize::new(0);
+    let collector = std::thread::spawn(move || {
+        let mut results = HashMap::with_capacity(16_384);
+        for (path, entries) in results_rx {
+            results.insert(path, entries);
+        }
+        results
+    });
+
+    pool.scope(|scope| {
+        walk_recursive(
+            scope,
+            root,
+            &results_tx,
+            skip_check.as_ref(),
+            progress_callback.as_deref(),
+            mapper,
+            &errors,
+        );
+    });
+    drop(results_tx);
+
+    WalkOutput {
+        entries: collector.join().expect("directory collector panicked"),
+        errors: errors.into_inner(),
+    }
+}
+
+fn walk_recursive<'scope, T, F>(
+    scope: &rayon::Scope<'scope>,
+    dir: PathBuf,
+    results: &'scope Sender<(PathBuf, Vec<T>)>,
+    skip_check: &'scope (dyn Fn(&Path) -> bool + Send + Sync),
+    progress_callback: Option<&'scope (dyn Fn(usize, usize, u64) + Send + Sync)>,
+    mapper: &'scope F,
+    errors: &'scope AtomicUsize,
+) where
+    T: Send + 'static,
+    F: Fn(&Path, Vec<RawEntry>) -> Vec<T> + Sync,
+{
     let entries = match read_dir_fast(&dir) {
         Ok(e) => e,
-        Err(_) => return,
+        Err(_) => {
+            errors.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
     };
 
     if let Some(ref cb) = progress_callback {
-        for e in &entries {
-            if !e.is_symlink {
-                cb(e.is_dir, e.size);
-            }
-        }
+        let (dirs, files, bytes) = entries.iter().filter(|entry| !entry.is_symlink).fold(
+            (0usize, 0usize, 0u64),
+            |(dirs, files, bytes), entry| {
+                if entry.is_dir {
+                    (dirs + 1, files, bytes)
+                } else {
+                    (dirs, files + 1, bytes.saturating_add(entry.size))
+                }
+            },
+        );
+        cb(dirs, files, bytes);
     }
 
     let subdirs: Vec<PathBuf> = entries
@@ -96,14 +169,22 @@ fn walk_recursive(
         .filter(|p| !skip_check(p))
         .collect();
 
-    results.lock().unwrap().insert(dir, entries);
+    let mapped_entries = mapper(&dir, entries);
+    if results.send((dir, mapped_entries)).is_err() {
+        return;
+    }
 
     for subdir in subdirs {
-        let results = Arc::clone(&results);
-        let skip_check = Arc::clone(&skip_check);
-        let progress_callback = progress_callback.clone();
         scope.spawn(move |s| {
-            walk_recursive(s, subdir, results, skip_check, progress_callback);
+            walk_recursive(
+                s,
+                subdir,
+                results,
+                skip_check,
+                progress_callback,
+                mapper,
+                errors,
+            );
         });
     }
 }
@@ -127,6 +208,17 @@ mod tests {
         assert!(directory.is_dir);
         assert_eq!(directory.size, 0);
         assert!(read_dir_fast(&temp.join("missing")).is_err());
+
+        let _type_only = read_dir_types(temp.path()).unwrap();
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(
+            _type_only
+                .iter()
+                .find(|entry| entry.name == "data.bin")
+                .unwrap()
+                .size,
+            0
+        );
     }
 
     #[cfg(unix)]
@@ -140,6 +232,32 @@ mod tests {
         let link = entries.iter().find(|e| e.name == "link").unwrap();
         assert!(link.is_symlink);
         assert_eq!(link.size, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preserves_non_utf8_names_and_paths() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let temp = TempDir::new("fastwalk-non-utf8");
+        let directory_name = OsString::from_vec(b"dir-\xff".to_vec());
+        let file_name = OsString::from_vec(b"file-\xfe".to_vec());
+        let directory = temp.path().join(&directory_name);
+        if let Err(error) = std::fs::create_dir(&directory) {
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                return;
+            }
+            panic!("failed to create non-UTF-8 test directory: {error}");
+        }
+        std::fs::write(directory.join(&file_name), b"data").unwrap();
+
+        let root_entries = read_dir_fast(temp.path()).unwrap();
+        assert!(root_entries
+            .iter()
+            .any(|entry| entry.name.as_os_str().as_bytes() == b"dir-\xff"));
+        let child_entries = read_dir_fast(&directory).unwrap();
+        assert!(child_entries
+            .iter()
+            .any(|entry| entry.name.as_os_str().as_bytes() == b"file-\xfe"));
     }
 
     #[test]
@@ -160,13 +278,10 @@ mod tests {
             let files = Arc::clone(&files);
             let dirs = Arc::clone(&dirs);
             let bytes = Arc::clone(&bytes);
-            Arc::new(move |is_dir, size| {
-                if is_dir {
-                    dirs.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    files.fetch_add(1, Ordering::Relaxed);
-                    bytes.fetch_add(size, Ordering::Relaxed);
-                }
+            Arc::new(move |dir_count, file_count, byte_count| {
+                dirs.fetch_add(dir_count, Ordering::Relaxed);
+                files.fetch_add(file_count, Ordering::Relaxed);
+                bytes.fetch_add(byte_count, Ordering::Relaxed);
             })
         };
         let tree = walk_parallel(
