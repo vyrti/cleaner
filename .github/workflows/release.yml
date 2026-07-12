@@ -72,7 +72,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ !matrix.cross && matrix.target || '' }}
 
       - name: Install cross-compilation tools
         if: matrix.cross
