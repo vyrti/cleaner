@@ -10,6 +10,11 @@ mod patterns;
 mod scanner;
 mod stats;
 mod tui;
+mod fastwalk;
+mod pool;
+
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use clap::Parser;
 use colored::Colorize;

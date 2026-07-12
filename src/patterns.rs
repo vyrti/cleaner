@@ -57,6 +57,7 @@ impl PatternMatcher {
 
     /// Check if path component matches any temp pattern
     #[inline]
+    #[allow(dead_code)]
     pub fn matches(&self, path: &Path, is_dir: bool) -> bool {
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
             if is_dir {

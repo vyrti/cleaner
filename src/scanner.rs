@@ -4,8 +4,10 @@
 use crate::config::Config;
 use crate::patterns::PatternMatcher;
 use crossbeam_channel::Sender;
-use jwalk::{Parallelism, WalkDir};
-use std::path::PathBuf;
+use crate::fastwalk;
+use crate::pool::SCAN_POOL;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 /// Result of scanning - a path to delete and whether it's a directory
@@ -21,6 +23,7 @@ pub struct Scanner {
     matcher: Arc<PatternMatcher>,
     config: Arc<Config>,
     root: PathBuf,
+    #[allow(dead_code)]
     num_threads: usize,
 }
 
@@ -39,7 +42,7 @@ impl Scanner {
     pub fn scan(&self, tx: Sender<ScanResult>) -> usize {
         let matcher = Arc::clone(&self.matcher);
         let config_clone = Arc::clone(&self.config);
-        let mut scanned = 0;
+        let scanned = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
         // macOS Docker exclusion: sparse disk image reports wrong sizes
         #[cfg(target_os = "macos")]
@@ -59,10 +62,8 @@ impl Scanner {
         #[cfg(not(target_os = "macos"))]
         let docker_path: Option<PathBuf> = None;
 
-        let docker_skip = Arc::new(docker_path);
-
         // Protected toolchain/package manager directories (NEVER clean inside these)
-        let protected_paths: Arc<Vec<PathBuf>> = Arc::new(if let Some(home) = std::env::var_os("HOME") {
+        let protected_paths: Vec<PathBuf> = if let Some(home) = std::env::var_os("HOME") {
             let home = PathBuf::from(home);
             vec![
                 home.join(".cargo"),      // Rust toolchain & crates
@@ -83,140 +84,155 @@ impl Scanner {
             ]
         } else {
             vec![]
+        };
+
+        let root_clone = self.root.clone();
+        let scanned_clone = Arc::clone(&scanned);
+        let docker_path_arc = Arc::new(docker_path);
+        let protected_paths_arc = Arc::new(protected_paths);
+        let root_arc = Arc::new(self.root.clone());
+
+        SCAN_POOL.scope(|s| {
+            walk_scanner(
+                s,
+                root_clone,
+                matcher,
+                config_clone,
+                tx,
+                scanned_clone,
+                docker_path_arc,
+                protected_paths_arc,
+                root_arc,
+            );
         });
 
-        // Configure jwalk for maximum parallelism
-        let docker_skip_clone = Arc::clone(&docker_skip);
-        let protected_clone = Arc::clone(&protected_paths);
-        let root_clone = self.root.clone();
-        let walker = WalkDir::new(&self.root)
-            .parallelism(Parallelism::RayonNewPool(self.num_threads))
-            .skip_hidden(false)
-            .follow_links(false)
-            .process_read_dir(move |_depth, _path, _state, children| {
-                // Skip Docker container on macOS
-                if let Some(ref docker) = *docker_skip_clone {
-                    children.retain(|entry| {
-                        if let Ok(ref e) = entry {
-                            !e.path().starts_with(docker)
-                        } else {
-                            true
-                        }
-                    });
-                }
-                
-                // Skip protected toolchain directories
-                children.retain(|entry| {
-                    if let Ok(ref e) = entry {
-                        !protected_clone.iter().any(|p| e.path().starts_with(p))
-                    } else {
-                        true
-                    }
-                });
+        Arc::try_unwrap(scanned).unwrap().into_inner()
+    }
+}
 
-                // Skip /System/Volumes and /Volumes on macOS to prevent duplicate counting
-                #[cfg(target_os = "macos")]
-                {
-                    children.retain(|entry| {
-                        if let Ok(ref e) = entry {
-                            let path = e.path();
-                            if (path.starts_with("/System/Volumes") || path == std::path::Path::new("/System/Volumes"))
-                                && !root_clone.starts_with("/System/Volumes")
-                            {
-                                return false;
-                            }
-                            if (path.starts_with("/Volumes") || path == std::path::Path::new("/Volumes"))
-                                && !root_clone.starts_with("/Volumes")
-                            {
-                                return false;
-                            }
-                        }
-                        true
-                    });
-                }
-                
-                // Mark directories for skip if they match our patterns
-                // This prevents descending into directories we're going to delete
-                let matcher_clone = Arc::clone(&matcher);
-                let days_opt = config_clone.days;
-                
-                children.iter_mut().for_each(|entry| {
-                    if let Ok(ref e) = entry {
-                        if e.file_type().is_dir() {
-                            if let Some(name) = e.file_name().to_str() {
-                                if matcher_clone.is_temp_directory(name) {
-                                    // CHECK TIME: If too new, don't delete AND don't skip descending 
-                                    // (treat as normal dir to find potential nested heavy items? 
-                                    // Actually, if we say "don't delete target because recent", 
-                                    // we likely don't want to delete ANYTHING inside it either)
-                                    let should_delete = if let Some(days) = days_opt {
-                                        if let Ok(metadata) = e.metadata() {
-                                            if let Ok(modified) = metadata.modified() {
-                                                if let Ok(elapsed) = modified.elapsed() {
-                                                     elapsed.as_secs() > days * 24 * 60 * 60
-                                                } else { false } // systematic clock issues -> safe default
-                                            } else { false } // no mod time -> safe default
-                                        } else { false } // no metadata -> safe default
-                                    } else {
-                                        true
-                                    };
+fn walk_scanner(
+    scope: &rayon::Scope<'_>,
+    dir: PathBuf,
+    matcher: Arc<PatternMatcher>,
+    config: Arc<Config>,
+    tx: Sender<ScanResult>,
+    scanned: Arc<std::sync::atomic::AtomicUsize>,
+    docker_path: Arc<Option<PathBuf>>,
+    protected_paths: Arc<Vec<PathBuf>>,
+    root: Arc<PathBuf>,
+) {
+    let entries = match fastwalk::read_dir_fast(&dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
 
-                                    if should_delete {
-                                        // We'll handle this directory, skip its contents
-                                        let _ = entry.as_mut().map(|e| e.read_children_path = None);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                });
-            });
+    let mut subdirs = Vec::with_capacity(8);
 
-        let matcher = Arc::clone(&self.matcher);
+    for e in entries {
+        scanned.fetch_add(1, Ordering::Relaxed);
 
-        for entry in walker {
-            scanned += 1;
+        let path = dir.join(&e.name);
 
-            if let Ok(entry) = entry {
-                let path = entry.path();
-                let is_dir = entry.file_type().is_dir();
-
-                if matcher.matches(&path, is_dir) {
-                    // Check modification time if configured
-                    let should_delete = if let Some(days) = self.config.days {
-                        if let Ok(metadata) = entry.metadata() {
-                            if let Ok(modified) = metadata.modified() {
-                                if let Ok(elapsed) = modified.elapsed() {
-                                    elapsed.as_secs() > days * 24 * 60 * 60
-                                } else { false }
-                            } else { false }
-                        } else { false }
-                    } else {
-                        true
-                    };
-
-                    if should_delete {
-                        // Calculate size for directories (estimate) or files
-                        let size = if is_dir {
-                            // For directories marked for deletion, we'll calculate size during deletion
-                            0
-                        } else {
-                            entry.metadata().map(|m| m.len()).unwrap_or(0)
-                        };
-
-                        let result = ScanResult {
-                            path: path.to_path_buf(),
-                            is_dir,
-                            size,
-                        };
-
-                        // Send to deletion channel - ignore send errors (receiver dropped)
-                        let _ = tx.send(result);
-                    }
-                }
+        // 1. Skip Docker container on macOS
+        if let Some(ref docker) = *docker_path {
+            if path.starts_with(docker) {
+                continue;
             }
         }
 
-        scanned
+        // 2. Skip protected paths
+        if protected_paths.iter().any(|p| path.starts_with(p)) {
+            continue;
+        }
+
+        // 3. Skip macOS OS mounts to prevent duplicate scans
+        #[cfg(target_os = "macos")]
+        {
+            if (path.starts_with("/System/Volumes") || path == Path::new("/System/Volumes"))
+                && !root.starts_with("/System/Volumes")
+            {
+                continue;
+            }
+            if (path.starts_with("/Volumes") || path == Path::new("/Volumes"))
+                && !root.starts_with("/Volumes")
+            {
+                continue;
+            }
+        }
+
+        if e.is_dir {
+            if matcher.is_temp_directory(&e.name) {
+                let should_delete = if let Some(days) = config.days {
+                    if let Ok(metadata) = std::fs::metadata(&path) {
+                        if let Ok(modified) = metadata.modified() {
+                            if let Ok(elapsed) = modified.elapsed() {
+                                elapsed.as_secs() > days * 24 * 60 * 60
+                            } else { false }
+                        } else { false }
+                    } else { false }
+                } else {
+                    true
+                };
+
+                if should_delete {
+                    let _ = tx.send(ScanResult {
+                        path,
+                        is_dir: true,
+                        size: 0,
+                    });
+                    continue;
+                }
+            }
+
+            if !e.is_symlink {
+                subdirs.push(path);
+            }
+        } else {
+            if matcher.is_temp_file(&e.name) {
+                let should_delete = if let Some(days) = config.days {
+                    if let Ok(metadata) = std::fs::metadata(&path) {
+                        if let Ok(modified) = metadata.modified() {
+                            if let Ok(elapsed) = modified.elapsed() {
+                                elapsed.as_secs() > days * 24 * 60 * 60
+                            } else { false }
+                        } else { false }
+                    } else { false }
+                } else {
+                    true
+                };
+
+                if should_delete {
+                    let _ = tx.send(ScanResult {
+                        path,
+                        is_dir: false,
+                        size: e.size,
+                    });
+                }
+            }
+        }
+    }
+
+    // Spawn sub-tasks in parallel using rayon work-stealing
+    for subdir in subdirs {
+        let matcher = Arc::clone(&matcher);
+        let config = Arc::clone(&config);
+        let tx = tx.clone();
+        let scanned = Arc::clone(&scanned);
+        let docker_path = Arc::clone(&docker_path);
+        let protected_paths = Arc::clone(&protected_paths);
+        let root = Arc::clone(&root);
+        scope.spawn(move |s| {
+            walk_scanner(
+                s,
+                subdir,
+                matcher,
+                config,
+                tx,
+                scanned,
+                docker_path,
+                protected_paths,
+                root,
+            );
+        });
     }
 }

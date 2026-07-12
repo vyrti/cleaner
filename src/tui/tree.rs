@@ -2,9 +2,10 @@
 //! Single WalkDir, no duplicate syscalls, O(n) everywhere
 
 use crate::patterns::PatternMatcher;
-use jwalk::WalkDir;
+use crate::fastwalk;
+use crate::pool::SCAN_POOL;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -43,14 +44,7 @@ impl ScanProgress {
     pub fn get_phase(&self) -> u8 { self.phase.load(Ordering::Relaxed) }
 }
 
-/// Entry info collected in single pass (no extra syscalls)
-struct RawEntry {
-    path: PathBuf,
-    parent: PathBuf,
-    name: String,
-    size: u64,
-    is_dir: bool,
-}
+
 
 pub struct DirTree {
     pub children: HashMap<PathBuf, Vec<DirEntry>>,
@@ -64,13 +58,7 @@ impl DirTree {
         progress: Arc<ScanProgress>,
         cancelled: Arc<AtomicBool>,
     ) -> Self {
-        let mut children: HashMap<PathBuf, Vec<DirEntry>> = HashMap::new();
-
-        // SINGLE PASS: Collect all entries with parallel jwalk
-        let mut entries: Vec<RawEntry> = Vec::new();
-        let mut dir_sizes: HashMap<PathBuf, u64> = HashMap::new();
-
-        // macOS Docker exclusion: sparse disk image reports wrong sizes
+        // Build the skip check closure
         #[cfg(target_os = "macos")]
         let docker_path: Option<PathBuf> = {
             if let Some(home) = std::env::var_os("HOME") {
@@ -89,88 +77,68 @@ impl DirTree {
         let docker_path: Option<PathBuf> = None;
 
         let root_clone = root.clone();
-        // Use jwalk with parallelism enabled
-        for entry in WalkDir::new(root)
-            .parallelism(jwalk::Parallelism::RayonNewPool(num_cpus::get()))
-            .skip_hidden(false)
-            .min_depth(1)
-            .process_read_dir(move |_depth, _path, _state, children| {
-                // Skip Docker container on macOS
-                if let Some(ref docker) = docker_path {
-                    children.retain(|entry| {
-                        if let Ok(ref e) = entry {
-                            !e.path().starts_with(docker)
-                        } else {
-                            true
-                        }
-                    });
+        let skip_check = Arc::new(move |path: &Path| -> bool {
+            if let Some(ref docker) = docker_path {
+                if path.starts_with(docker) {
+                    return true;
                 }
-
-                // Skip /System/Volumes and /Volumes on macOS to prevent duplicate counting
-                #[cfg(target_os = "macos")]
+            }
+            #[cfg(target_os = "macos")]
+            {
+                if (path.starts_with("/System/Volumes") || path == Path::new("/System/Volumes"))
+                    && !root_clone.starts_with("/System/Volumes")
                 {
-                    children.retain(|entry| {
-                        if let Ok(ref e) = entry {
-                            let path = e.path();
-                            if (path.starts_with("/System/Volumes") || path == std::path::Path::new("/System/Volumes"))
-                                && !root_clone.starts_with("/System/Volumes")
-                            {
-                                return false;
-                            }
-                            if (path.starts_with("/Volumes") || path == std::path::Path::new("/Volumes"))
-                                && !root_clone.starts_with("/Volumes")
-                            {
-                                return false;
-                            }
-                        }
-                        true
-                    });
+                    return true;
                 }
-            })
-        {
-            if cancelled.load(Ordering::Relaxed) {
-                progress.done.store(true, Ordering::Relaxed);
-                return Self { children };
+                if (path.starts_with("/Volumes") || path == Path::new("/Volumes"))
+                    && !root_clone.starts_with("/Volumes")
+                {
+                    return true;
+                }
             }
+            false
+        });
 
-            if let Ok(e) = entry {
-                let path = e.path();
+        // 1. Walk the directory tree in parallel using native platform syscalls
+        let raw_tree = fastwalk::walk_parallel(root.clone(), &SCAN_POOL, skip_check);
 
-                let is_dir = e.file_type().is_dir(); // Already cached by jwalk!
-                let name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
+        if cancelled.load(Ordering::Relaxed) {
+            progress.done.store(true, Ordering::Relaxed);
+            return Self { children: HashMap::new() };
+        }
 
-                let size = if is_dir {
-                    progress.dirs.fetch_add(1, Ordering::Relaxed);
-                    0 // Will calculate later
-                } else {
-                    let s = e.metadata().map(|m| m.len()).unwrap_or(0);
-                    progress.files.fetch_add(1, Ordering::Relaxed);
-                    progress.bytes.fetch_add(s, Ordering::Relaxed);
-                    
-                    // Aggregate to parent directories immediately
-                    let mut current = path.parent();
-                    while let Some(dir) = current {
-                        *dir_sizes.entry(dir.to_path_buf()).or_insert(0) += s;
-                        if dir == root.as_path() { break; }
-                        current = dir.parent();
+        // 2. Build the children map using pre-allocated capacity
+        let mut children: HashMap<PathBuf, Vec<DirEntry>> = HashMap::with_capacity(raw_tree.len());
+
+        for (dir_path, entries) in &raw_tree {
+            let dir_entries: Vec<DirEntry> = entries
+                .iter()
+                .filter(|e| !e.is_symlink)
+                .map(|e| {
+                    let full_path = dir_path.join(&e.name);
+                    let is_temp = if e.is_dir {
+                        matcher.is_temp_directory(&e.name)
+                    } else {
+                        matcher.is_temp_file(&e.name)
+                    };
+
+                    if e.is_dir {
+                        progress.dirs.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        progress.files.fetch_add(1, Ordering::Relaxed);
+                        progress.bytes.fetch_add(e.size, Ordering::Relaxed);
                     }
-                    s
-                };
 
-                if let Some(parent) = path.parent() {
-                    let parent_buf = parent.to_path_buf();
-                    entries.push(RawEntry {
-                        path,
-                        parent: parent_buf,
-                        name,
-                        size,
-                        is_dir,
-                    });
-                }
-            }
+                    DirEntry {
+                        path: full_path,
+                        name: e.name.clone(),
+                        size: e.size,
+                        is_dir: e.is_dir,
+                        is_temp,
+                    }
+                })
+                .collect();
+            children.insert(dir_path.clone(), dir_entries);
         }
 
         if cancelled.load(Ordering::Relaxed) {
@@ -180,48 +148,39 @@ impl DirTree {
 
         progress.phase.store(1, Ordering::Relaxed);
 
-        // Build children map - single pass through collected entries
-        for e in entries {
-            let size = if e.is_dir {
-                *dir_sizes.get(&e.path).unwrap_or(&0)
-            } else {
-                e.size
-            };
+        // 3. Bottom-up recursive sizing
+        let mut size_cache: HashMap<PathBuf, u64> = HashMap::with_capacity(children.len());
+        compute_dir_size(root, &children, &mut size_cache);
 
-            let is_temp = if e.is_dir {
-                matcher.is_temp_directory(&e.name)
-            } else {
-                matcher.is_temp_file(&e.name)
-            };
-
-            children.entry(e.parent.clone()).or_default().push(DirEntry {
-                path: e.path,
-                name: e.name,
-                size,
-                is_dir: e.is_dir,
-                is_temp,
-            });
+        // 4. Apply computed sizes to directory entries in children map
+        for entries in children.values_mut() {
+            for entry in entries.iter_mut() {
+                if entry.is_dir {
+                    entry.size = *size_cache.get(&entry.path).unwrap_or(&0);
+                }
+            }
         }
 
-        // Sort and add ".." navigation
+        // 5. Sort entries and add ".." navigation
         for (dir_path, entries) in children.iter_mut() {
-            entries.sort_unstable_by(|a, b| {
-                match (a.is_dir, b.is_dir) {
-                    (true, false) => std::cmp::Ordering::Less,
-                    (false, true) => std::cmp::Ordering::Greater,
-                    _ => b.size.cmp(&a.size),
-                }
+            entries.sort_unstable_by(|a, b| match (a.is_dir, b.is_dir) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => b.size.cmp(&a.size),
             });
 
             if dir_path != root {
                 if let Some(parent) = dir_path.parent() {
-                    entries.insert(0, DirEntry {
-                        path: parent.to_path_buf(),
-                        name: "..".to_string(),
-                        size: 0,
-                        is_dir: true,
-                        is_temp: false,
-                    });
+                    entries.insert(
+                        0,
+                        DirEntry {
+                            path: parent.to_path_buf(),
+                            name: "..".to_string(),
+                            size: 0,
+                            is_dir: true,
+                            is_temp: false,
+                        },
+                    );
                 }
             }
         }
@@ -229,6 +188,33 @@ impl DirTree {
         progress.done.store(true, Ordering::Relaxed);
         Self { children }
     }
+}
+
+fn compute_dir_size(
+    dir: &Path,
+    children: &HashMap<PathBuf, Vec<DirEntry>>,
+    cache: &mut HashMap<PathBuf, u64>,
+) -> u64 {
+    if let Some(&s) = cache.get(dir) {
+        return s;
+    }
+    let total = children.get(dir).map_or(0, |entries| {
+        entries
+            .iter()
+            .map(|e| {
+                if e.is_dir && e.name != ".." {
+                    compute_dir_size(&e.path, children, cache)
+                } else {
+                    e.size
+                }
+            })
+            .sum()
+    });
+    cache.insert(dir.to_path_buf(), total);
+    total
+}
+
+impl DirTree {
 
     pub fn get_children(&self, path: &PathBuf) -> Vec<DirEntry> {
         self.children.get(path).cloned().unwrap_or_default()

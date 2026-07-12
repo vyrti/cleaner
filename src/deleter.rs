@@ -110,23 +110,27 @@ impl Deleter {
         }
     }
 
-    /// Count files and total size inside a directory using parallel walk
+    /// Count files and total size inside a directory using fastwalk
     fn count_dir_contents(path: &std::path::Path) -> (usize, u64) {
-        use jwalk::WalkDir;
-        
         let mut file_count = 0usize;
         let mut total_size = 0u64;
-        
-        for entry in WalkDir::new(path)
-            .skip_hidden(false)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file())
-        {
-            file_count += 1;
-            total_size += entry.metadata().map(|m| m.len()).unwrap_or(0);
+        let mut stack = vec![path.to_path_buf()];
+
+        while let Some(current_path) = stack.pop() {
+            if let Ok(entries) = crate::fastwalk::read_dir_fast(&current_path) {
+                for e in entries {
+                    if e.is_dir {
+                        if !e.is_symlink {
+                            stack.push(current_path.join(&e.name));
+                        }
+                    } else {
+                        file_count += 1;
+                        total_size += e.size;
+                    }
+                }
+            }
         }
-        
+
         (file_count, total_size)
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "cleaner"
-version = "0.0.6"
+version = "0.0.7"
 edition = "2021"
 description = "High-performance folder cleaner for development temp files"
 license = "Apache-2.0"
@@ -8,9 +8,6 @@ license = "Apache-2.0"
 [dependencies]
 # CLI parsing
 clap = { version = "4", features = ["derive"] }
-
-# Parallel filesystem walking
-jwalk = "0.8"
 
 # Data parallelism for deletions
 rayon = "1.12"
@@ -43,6 +40,17 @@ dirs = "6"
 # TUI
 ratatui = "0.30"
 crossterm = "0.29"
+
+# System API access
+libc = "0.2"
+
+# High-performance allocator
+mimalloc = { version = "0.1", default-features = false }
+
+# Linux-specific file descriptor APIs
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "0.38", features = ["fs"] }
+
 
 [profile.release]
 lto = true
