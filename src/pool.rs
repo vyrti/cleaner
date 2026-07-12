@@ -1,5 +1,5 @@
-use std::sync::{Arc, LazyLock};
 use rayon::ThreadPool;
+use std::sync::{Arc, LazyLock};
 
 pub static SCAN_POOL: LazyLock<Arc<ThreadPool>> = LazyLock::new(|| {
     Arc::new(
@@ -7,6 +7,16 @@ pub static SCAN_POOL: LazyLock<Arc<ThreadPool>> = LazyLock::new(|| {
             .num_threads(num_cpus::get())
             .thread_name(|i| format!("scan-{}", i))
             .build()
-            .unwrap()
+            .unwrap(),
     )
 });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_pool_is_initialized_with_workers() {
+        assert!(SCAN_POOL.current_num_threads() >= 1);
+    }
+}

@@ -71,8 +71,16 @@ pub struct Config {
 impl Config {
     /// Load configuration with priority: env vars > config file > defaults
     pub fn load(config_path: Option<&Path>) -> Self {
+        Self::load_with_env(config_path, |name| std::env::var(name).ok())
+    }
+
+    fn load_with_env<F>(config_path: Option<&Path>, mut env: F) -> Self
+    where
+        F: FnMut(&str) -> Option<String>,
+    {
         // Start with defaults
-        let mut directories: Vec<String> = DEFAULT_DIRECTORIES.iter().map(|s| s.to_string()).collect();
+        let mut directories: Vec<String> =
+            DEFAULT_DIRECTORIES.iter().map(|s| s.to_string()).collect();
         let mut files: Vec<String> = DEFAULT_FILES.iter().map(|s| s.to_string()).collect();
         let mut days = None;
 
@@ -94,13 +102,13 @@ impl Config {
         }
 
         // Override with environment variables (highest priority)
-        if let Ok(env_dirs) = std::env::var("CLEANER_DIRS") {
+        if let Some(env_dirs) = env("CLEANER_DIRS") {
             directories = env_dirs.split(',').map(|s| s.trim().to_string()).collect();
         }
-        if let Ok(env_files) = std::env::var("CLEANER_FILES") {
+        if let Some(env_files) = env("CLEANER_FILES") {
             files = env_files.split(',').map(|s| s.trim().to_string()).collect();
         }
-        if let Ok(env_days) = std::env::var("CLEANER_DAYS") {
+        if let Some(env_days) = env("CLEANER_DAYS") {
             if let Ok(d) = env_days.parse() {
                 days = Some(d);
             }
@@ -130,5 +138,79 @@ impl Config {
 impl Default for Config {
     fn default() -> Self {
         Self::load(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::TempDir;
+
+    fn no_env(_: &str) -> Option<String> {
+        None
+    }
+
+    #[test]
+    fn defaults_contain_expected_patterns() {
+        let config = Config::load_with_env(None, no_env);
+        assert_eq!(config.directories.len(), DEFAULT_DIRECTORIES.len());
+        assert_eq!(config.files.len(), DEFAULT_FILES.len());
+        assert!(config.directories().contains(&"target"));
+        assert!(config.files().contains(&".pyc"));
+        assert_eq!(config.days, None);
+        assert!(!config.force);
+    }
+
+    #[test]
+    fn valid_file_overrides_nonempty_values() {
+        let temp = TempDir::new("config-valid");
+        let path = temp.write(
+            "cleaner.toml",
+            b"days = 7\n[patterns]\ndirectories = ['cache-dir']\nfiles = ['.tmp']\n",
+        );
+        let config = Config::load_with_env(Some(&path), no_env);
+        assert_eq!(config.directories, ["cache-dir"]);
+        assert_eq!(config.files, [".tmp"]);
+        assert_eq!(config.days, Some(7));
+    }
+
+    #[test]
+    fn empty_or_invalid_file_values_fall_back_to_defaults() {
+        let temp = TempDir::new("config-fallback");
+        let empty = temp.write("empty.toml", b"[patterns]\ndirectories = []\nfiles = []\n");
+        let config = Config::load_with_env(Some(&empty), no_env);
+        assert_eq!(config.directories.len(), DEFAULT_DIRECTORIES.len());
+
+        let invalid = temp.write("invalid.toml", b"this is not = valid toml [");
+        let config = Config::load_with_env(Some(&invalid), no_env);
+        assert_eq!(config.files.len(), DEFAULT_FILES.len());
+    }
+
+    #[test]
+    fn environment_has_highest_priority_and_trims_lists() {
+        let temp = TempDir::new("config-env");
+        let path = temp.write(
+            "cleaner.toml",
+            b"days = 7\n[patterns]\ndirectories = ['from-file']\nfiles = ['.file']\n",
+        );
+        let config = Config::load_with_env(Some(&path), |name| match name {
+            "CLEANER_DIRS" => Some(" one, two ".into()),
+            "CLEANER_FILES" => Some(".log, ~".into()),
+            "CLEANER_DAYS" => Some("30".into()),
+            _ => None,
+        });
+        assert_eq!(config.directories, ["one", "two"]);
+        assert_eq!(config.files, [".log", "~"]);
+        assert_eq!(config.days, Some(30));
+    }
+
+    #[test]
+    fn invalid_environment_days_does_not_replace_file_value() {
+        let temp = TempDir::new("config-env-invalid");
+        let path = temp.write("cleaner.toml", b"days = 4\n");
+        let config = Config::load_with_env(Some(&path), |name| {
+            (name == "CLEANER_DAYS").then(|| "not-a-number".into())
+        });
+        assert_eq!(config.days, Some(4));
     }
 }

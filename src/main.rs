@@ -6,12 +6,14 @@
 
 mod config;
 mod deleter;
+mod fastwalk;
 mod patterns;
+mod pool;
 mod scanner;
 mod stats;
+#[cfg(test)]
+mod test_support;
 mod tui;
-mod fastwalk;
-mod pool;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -68,25 +70,34 @@ struct Args {
     force: bool,
 }
 
+fn resolve_folder(args: &Args) -> PathBuf {
+    args.path
+        .clone()
+        .or_else(|| args.folder.clone())
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn json_escape_path(path: &std::path::Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+}
+
 fn main() {
     let args = Args::parse();
 
     let is_interactive = !args.json && !args.confirm;
 
     // Resolve folder: positional > --folder > home directory
-    let folder = args.path
-        .clone()
-        .or_else(|| args.folder.clone())
-        .unwrap_or_else(|| {
-            dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
-        });
+    let folder = resolve_folder(&args);
 
     // Validate folder exists
     if !folder.exists() {
         if args.json {
             println!(
                 "{{\"success\":false,\"error\":\"Folder does not exist: {}\"}}",
-                folder.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"")
+                json_escape_path(&folder)
             );
         } else {
             eprintln!(
@@ -102,7 +113,7 @@ fn main() {
         if args.json {
             println!(
                 "{{\"success\":false,\"error\":\"Path is not a directory: {}\"}}",
-                folder.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"")
+                json_escape_path(&folder)
             );
         } else {
             eprintln!(
@@ -119,13 +130,13 @@ fn main() {
 
     // Load configuration (priority: env vars > config file > defaults)
     let mut config = Config::load(args.config.as_deref());
-    
+
     // CLI args override config
     if let Some(days) = args.days {
         config.days = Some(days);
     }
     config.force = args.force;
-    
+
     let config = Arc::new(config);
 
     // Interactive TUI mode by default when run without folder/path arguments
@@ -177,11 +188,7 @@ fn main() {
             );
         }
 
-        println!(
-            "  {} {}",
-            "Target:".bright_white().bold(),
-            folder.display()
-        );
+        println!("  {} {}", "Target:".bright_white().bold(), folder.display());
 
         if let Some(ref config_path) = args.config {
             println!(
@@ -191,11 +198,7 @@ fn main() {
             );
         }
 
-        println!(
-            "  {} {}",
-            "Threads:".bright_white().bold(),
-            num_threads
-        );
+        println!("  {} {}", "Threads:".bright_white().bold(), num_threads);
 
         if let Some(days) = config.days {
             println!(
@@ -248,13 +251,14 @@ fn main() {
 
     // Start scanner in separate thread
     let scanner = scanner::Scanner::new(folder.clone(), num_threads, Arc::clone(&config));
-    let scan_handle = thread::spawn(move || {
-        let count = scanner.scan(tx);
-        count
-    });
+    let scan_handle = thread::spawn(move || scanner.scan(tx));
 
     // Create deleter
-    let deleter = deleter::Deleter::new(Arc::clone(&stats), !args.confirm, args.verbose && !args.json);
+    let deleter = deleter::Deleter::new(
+        Arc::clone(&stats),
+        !args.confirm,
+        args.verbose && !args.json,
+    );
 
     // Process deletions (this blocks until scanner finishes and channel closes)
     deleter.process(rx);
@@ -274,7 +278,7 @@ fn main() {
         println!(
             "{{\"success\":true,\"mode\":\"{}\",\"target\":\"{}\",\"scanned_entries\":{},\"time_ms\":{},\"deleted_directories\":{},\"deleted_files\":{},\"bytes_freed\":{},\"errors\":{}}}",
             mode,
-            folder.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\""),
+            json_escape_path(&folder),
             scanned_count,
             elapsed.as_millis(),
             stats.directories(),
@@ -289,8 +293,7 @@ fn main() {
     println!();
     println!(
         "{}",
-        "═══════════════════════════════════════════════════════════════"
-            .bright_cyan()
+        "═══════════════════════════════════════════════════════════════".bright_cyan()
     );
     println!("  {}", "Results:".bright_green().bold());
     println!();
@@ -301,11 +304,7 @@ fn main() {
             "Would delete:".yellow(),
             stats.directories()
         );
-        println!(
-            "    {} {} files",
-            "Would delete:".yellow(),
-            stats.files()
-        );
+        println!("    {} {} files", "Would delete:".yellow(), stats.files());
         println!(
             "    {} {}",
             "Would free:".yellow(),
@@ -342,8 +341,55 @@ fn main() {
     );
     println!(
         "{}",
-        "═══════════════════════════════════════════════════════════════"
-            .bright_cyan()
+        "═══════════════════════════════════════════════════════════════".bright_cyan()
     );
     println!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_cli_options() {
+        let args = Args::try_parse_from([
+            "cleaner",
+            "somewhere",
+            "--folder",
+            "fallback",
+            "--config",
+            "config.toml",
+            "--confirm",
+            "--verbose",
+            "--threads",
+            "4",
+            "--days",
+            "30",
+            "--json",
+            "--force",
+        ])
+        .unwrap();
+        assert_eq!(args.path, Some(PathBuf::from("somewhere")));
+        assert_eq!(args.folder, Some(PathBuf::from("fallback")));
+        assert_eq!(args.config, Some(PathBuf::from("config.toml")));
+        assert!(args.confirm && args.verbose && args.json && args.force);
+        assert_eq!(args.threads, Some(4));
+        assert_eq!(args.days, Some(30));
+    }
+
+    #[test]
+    fn positional_folder_takes_priority() {
+        let args = Args::try_parse_from(["cleaner", "positional", "--folder", "option"]).unwrap();
+        assert_eq!(resolve_folder(&args), PathBuf::from("positional"));
+        let args = Args::try_parse_from(["cleaner", "--folder", "option"]).unwrap();
+        assert_eq!(resolve_folder(&args), PathBuf::from("option"));
+    }
+
+    #[test]
+    fn escapes_paths_for_json_strings() {
+        assert_eq!(
+            json_escape_path(std::path::Path::new("a\\b\"c")),
+            "a\\\\b\\\"c"
+        );
+    }
 }

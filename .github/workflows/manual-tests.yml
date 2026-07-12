@@ -1,0 +1,93 @@
+name: Manual Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit SHA, branch, or tag to test
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  native-tests:
+    name: Test ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: Linux
+          - os: macos-latest
+            name: macOS
+          - os: windows-latest
+            name: Windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out selected commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run all tests
+        run: cargo test --all-targets --locked --verbose
+
+  freebsd-tests:
+    name: Test FreeBSD
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out selected commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Run all tests in FreeBSD VM
+        uses: vmactions/freebsd-vm@v1.4.6
+        with:
+          release: "14.4"
+          usesh: true
+          run: |
+            set -eu
+            pkg install -y rust
+            cargo test --all-targets --locked --verbose
+
+  quality-and-coverage:
+    name: Formatting, Clippy, and coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out selected commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt, llvm-tools-preview
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Generate coverage report
+        run: cargo llvm-cov --all-targets --locked --lcov --output-path lcov.info
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ github.run_id }}
+          path: lcov.info

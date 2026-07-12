@@ -1,12 +1,12 @@
+use rayon::ThreadPool;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use rayon::ThreadPool;
 
-#[cfg(target_os = "macos")]
-mod mac;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 mod linux;
+#[cfg(target_os = "macos")]
+mod mac;
 
 #[derive(Debug, Clone)]
 pub struct RawEntry {
@@ -105,5 +105,82 @@ fn walk_recursive(
         scope.spawn(move |s| {
             walk_recursive(s, subdir, results, skip_check, progress_callback);
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::TempDir;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    #[test]
+    fn reads_file_directory_and_size() {
+        let temp = TempDir::new("fastwalk-read");
+        temp.mkdir("child");
+        temp.write("data.bin", b"12345");
+        let entries = read_dir_fast(temp.path()).unwrap();
+        let file = entries.iter().find(|e| e.name == "data.bin").unwrap();
+        let directory = entries.iter().find(|e| e.name == "child").unwrap();
+        assert_eq!(file.size, 5);
+        assert!(!file.is_dir);
+        assert!(directory.is_dir);
+        assert_eq!(directory.size, 0);
+        assert!(read_dir_fast(&temp.join("missing")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn identifies_symlinks_without_following_them() {
+        use std::os::unix::fs::symlink;
+        let temp = TempDir::new("fastwalk-link");
+        temp.write("target", b"payload");
+        symlink(temp.join("target"), temp.join("link")).unwrap();
+        let entries = read_dir_fast(temp.path()).unwrap();
+        let link = entries.iter().find(|e| e.name == "link").unwrap();
+        assert!(link.is_symlink);
+        assert_eq!(link.size, 0);
+    }
+
+    #[test]
+    fn parallel_walk_honors_skip_and_reports_progress() {
+        let temp = TempDir::new("fastwalk-parallel");
+        temp.write("root.txt", b"abc");
+        temp.write("keep/inside.txt", b"12345");
+        temp.write("skip/hidden.txt", b"1234567");
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
+        let skip = temp.join("skip");
+        let files = Arc::new(AtomicUsize::new(0));
+        let dirs = Arc::new(AtomicUsize::new(0));
+        let bytes = Arc::new(AtomicU64::new(0));
+        let callback = {
+            let files = Arc::clone(&files);
+            let dirs = Arc::clone(&dirs);
+            let bytes = Arc::clone(&bytes);
+            Arc::new(move |is_dir, size| {
+                if is_dir {
+                    dirs.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    files.fetch_add(1, Ordering::Relaxed);
+                    bytes.fetch_add(size, Ordering::Relaxed);
+                }
+            })
+        };
+        let tree = walk_parallel(
+            temp.path().to_path_buf(),
+            &pool,
+            Arc::new(move |path| path == skip),
+            Some(callback),
+        );
+        assert!(tree.contains_key(temp.path()));
+        assert!(tree.contains_key(&temp.join("keep")));
+        assert!(!tree.contains_key(&temp.join("skip")));
+        // The skipped directory itself is observed in the root; its contents are not.
+        assert_eq!(dirs.load(Ordering::Relaxed), 2);
+        assert_eq!(files.load(Ordering::Relaxed), 2);
+        assert_eq!(bytes.load(Ordering::Relaxed), 8);
     }
 }

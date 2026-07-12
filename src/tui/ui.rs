@@ -38,7 +38,10 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         let used_str = humansize::format_size(disk_used, humansize::BINARY);
         let free_str = humansize::format_size(app.disk_free, humansize::BINARY);
         let free_pct = (app.disk_free as f64 / app.disk_total as f64) * 100.0;
-        format!(" │ Disk Used: {} │ Free: {} ({:.1}%)", used_str, free_str, free_pct)
+        format!(
+            " │ Disk Used: {} │ Free: {} ({:.1}%)",
+            used_str, free_str, free_pct
+        )
     } else {
         "".to_string()
     };
@@ -105,7 +108,8 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
         let size_str = humansize::format_size(bytes, humansize::BINARY);
         format!(
             " Clean all temp files in '{}'? (y/n) - Will delete: {} folders, {} files, {} size",
-            app.current_path.file_name()
+            app.current_path
+                .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| app.current_path.to_string_lossy().to_string()),
             dirs,
@@ -139,4 +143,94 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
         .block(Block::default().borders(Borders::ALL));
 
     f.render_widget(footer, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::patterns::PatternMatcher;
+    use crate::tui::tree::{DirEntry, DirTree};
+    use ratatui::{backend::TestBackend, Terminal};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    fn app() -> App {
+        let root = PathBuf::from("test-root");
+        let matcher = Arc::new(PatternMatcher::new(Arc::new(Config {
+            directories: vec!["target".into()],
+            files: vec![".pyc".into()],
+            days: None,
+            force: false,
+        })));
+        let mut children = HashMap::new();
+        children.insert(
+            root.clone(),
+            vec![
+                DirEntry {
+                    path: root.join("target"),
+                    name: "target".into(),
+                    size: 4096,
+                    is_dir: true,
+                    is_temp: true,
+                },
+                DirEntry {
+                    path: root.join("main.rs"),
+                    name: "main.rs".into(),
+                    size: 20,
+                    is_dir: false,
+                    is_temp: false,
+                },
+            ],
+        );
+        App::new_with_tree(root, matcher, DirTree { children }, false)
+    }
+
+    fn screen(app: &App) -> String {
+        let backend = TestBackend::new(100, 14);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn renders_header_entries_and_default_help() {
+        let output = screen(&app());
+        assert!(output.contains("Cleaner"));
+        assert!(output.contains("Sort: size"));
+        assert!(output.contains("target"));
+        assert!(output.contains("[TEMP]"));
+        assert!(output.contains("Enter:open"));
+    }
+
+    #[test]
+    fn renders_delete_clean_and_status_footers() {
+        let mut app = app();
+        app.confirm_delete = true;
+        assert!(screen(&app).contains("Delete 'target'?"));
+        app.confirm_delete = false;
+        app.confirm_clean = true;
+        assert!(screen(&app).contains("Clean all temp files"));
+        app.confirm_clean = false;
+        app.status_message = Some("Refreshed".into());
+        assert!(screen(&app).contains("Refreshed"));
+    }
+
+    #[test]
+    fn renders_disk_information_and_name_sort() {
+        let mut app = app();
+        app.sort_mode = SortMode::Name;
+        app.disk_total = 1000;
+        app.disk_free = 250;
+        let output = screen(&app);
+        assert!(output.contains("Sort: name"));
+        assert!(output.contains("25.0%"));
+    }
 }

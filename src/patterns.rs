@@ -26,8 +26,7 @@ impl PatternMatcher {
                 return true;
             }
             // Handle wildcard patterns like "*.egg-info"
-            if pattern.starts_with('*') {
-                let suffix = &pattern[1..];
+            if let Some(suffix) = pattern.strip_prefix('*') {
                 if name.ends_with(suffix) {
                     return true;
                 }
@@ -96,11 +95,7 @@ mod tests {
                 "__pycache__".to_string(),
                 "*.egg-info".to_string(),
             ],
-            files: vec![
-                ".DS_Store".to_string(),
-                ".pyc".to_string(),
-                "~".to_string(),
-            ],
+            files: vec![".DS_Store".to_string(), ".pyc".to_string(), "~".to_string()],
             days: None,
             force: false,
         })
@@ -130,5 +125,25 @@ mod tests {
     fn test_egg_info() {
         let matcher = PatternMatcher::new(test_config());
         assert!(matcher.is_temp_directory("mypackage.egg-info"));
+        assert!(!matcher.is_temp_directory("egg-info.mypackage"));
+    }
+
+    #[test]
+    fn matches_paths_and_exposes_configured_patterns() {
+        let matcher = PatternMatcher::new(test_config());
+        assert!(matcher.matches(Path::new("some/target"), true));
+        assert!(matcher.matches(Path::new("some/module.pyc"), false));
+        assert!(!matcher.matches(Path::new("some/main.rs"), false));
+        assert_eq!(matcher.directory_patterns()[0], ".terraform");
+        assert_eq!(matcher.file_patterns()[0], ".DS_Store");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_path_does_not_match() {
+        use std::os::unix::ffi::OsStrExt;
+        let matcher = PatternMatcher::new(test_config());
+        let path = Path::new(std::ffi::OsStr::from_bytes(b"\xff"));
+        assert!(!matcher.matches(path, false));
     }
 }

@@ -32,7 +32,7 @@ impl Deleter {
 
         for item in rx {
             batch.push(item);
-            
+
             // Process batch when full
             if batch.len() >= BATCH_SIZE {
                 self.process_batch(&batch);
@@ -132,5 +132,107 @@ impl Deleter {
         }
 
         (file_count, total_size)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::TempDir;
+    use crossbeam_channel::unbounded;
+
+    #[test]
+    fn dry_run_counts_directory_contents_without_deleting() {
+        let temp = TempDir::new("deleter-dry");
+        let directory = temp.mkdir("target");
+        temp.write("target/a.bin", b"123");
+        temp.write("target/nested/b.bin", b"12345");
+        let stats = Arc::new(Stats::new());
+        let (tx, rx) = unbounded();
+        tx.send(ScanResult {
+            path: directory.clone(),
+            is_dir: true,
+            size: 0,
+        })
+        .unwrap();
+        drop(tx);
+        Deleter::new(Arc::clone(&stats), true, false).process(rx);
+        assert!(directory.exists());
+        assert_eq!(
+            (
+                stats.directories(),
+                stats.files(),
+                stats.bytes(),
+                stats.error_count()
+            ),
+            (1, 2, 8, 0)
+        );
+    }
+
+    #[test]
+    fn live_run_deletes_files_and_directories() {
+        let temp = TempDir::new("deleter-live");
+        let file = temp.write("cache.pyc", b"1234");
+        let directory = temp.mkdir("target");
+        temp.write("target/content", b"123456");
+        let stats = Arc::new(Stats::new());
+        let (tx, rx) = unbounded();
+        tx.send(ScanResult {
+            path: file.clone(),
+            is_dir: false,
+            size: 4,
+        })
+        .unwrap();
+        tx.send(ScanResult {
+            path: directory.clone(),
+            is_dir: true,
+            size: 0,
+        })
+        .unwrap();
+        drop(tx);
+        Deleter::new(Arc::clone(&stats), false, false).process(rx);
+        assert!(!file.exists());
+        assert!(!directory.exists());
+        assert_eq!(
+            (stats.directories(), stats.files(), stats.bytes()),
+            (1, 2, 10)
+        );
+    }
+
+    #[test]
+    fn failed_deletion_increments_errors_only() {
+        let temp = TempDir::new("deleter-error");
+        let stats = Arc::new(Stats::new());
+        let (tx, rx) = unbounded();
+        tx.send(ScanResult {
+            path: temp.join("missing"),
+            is_dir: false,
+            size: 99,
+        })
+        .unwrap();
+        drop(tx);
+        Deleter::new(Arc::clone(&stats), false, false).process(rx);
+        assert_eq!(stats.error_count(), 1);
+        assert_eq!(stats.files(), 0);
+        assert_eq!(stats.bytes(), 0);
+    }
+
+    #[test]
+    fn processing_spans_multiple_batches() {
+        let temp = TempDir::new("deleter-batches");
+        let stats = Arc::new(Stats::new());
+        let (tx, rx) = unbounded();
+        for i in 0..70 {
+            tx.send(ScanResult {
+                path: temp.join(format!("{i}.tmp")),
+                is_dir: false,
+                size: 1,
+            })
+            .unwrap();
+        }
+        drop(tx);
+        Deleter::new(Arc::clone(&stats), true, false).process(rx);
+        assert_eq!(stats.files(), 70);
+        assert_eq!(stats.bytes(), 70);
     }
 }

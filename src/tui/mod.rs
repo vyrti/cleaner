@@ -61,7 +61,13 @@ pub fn run(root: PathBuf, config: Arc<Config>) -> io::Result<()> {
     let matcher_clone = Arc::clone(&matcher);
     let config_clone = Arc::clone(&config);
     let scan_handle = thread::spawn(move || {
-        tree::DirTree::build_with_progress(&root_clone, &matcher_clone, progress_clone, cancelled_clone, config_clone.force)
+        tree::DirTree::build_with_progress(
+            &root_clone,
+            &matcher_clone,
+            progress_clone,
+            cancelled_clone,
+            config_clone.force,
+        )
     });
 
     // Show live progress while scanning with quit support
@@ -74,11 +80,31 @@ pub fn run(root: PathBuf, config: Arc<Config>) -> io::Result<()> {
             let bytes = progress.get_bytes();
             let size_str = humansize::format_size(bytes, humansize::BINARY);
             let phase = progress.get_phase();
+            let (stage_current, stage_total) = progress.get_stage_progress();
+            let (phase_name, phase_title) = match phase {
+                0 => ("⏳ Scanning filesystem", "Scanning"),
+                1 => ("🔄 Indexing entries", "Indexing"),
+                2 => ("📐 Calculating folder sizes", "Sizing"),
+                3 => ("↕ Sorting folders", "Sorting"),
+                _ => ("🔄 Finalizing", "Finalizing"),
+            };
+            let stage_line = if phase == 0 || stage_total == 0 {
+                String::new()
+            } else {
+                let percent = stage_current.saturating_mul(100) / stage_total;
+                format!(
+                    "\n  Progress: {}/{} folders ({}%)",
+                    stage_current.min(stage_total),
+                    stage_total,
+                    percent.min(100)
+                )
+            };
 
             let text = format!(
-                "\n\n  {} {}...\n\n  📁 {} folders\n  📄 {} files\n  💾 {}\n\n  Press 'q' to cancel",
-                if phase == 0 { "⏳ Scanning" } else { "🔄 Building tree from" },
+                "\n\n  {}: {}{}\n\n  📁 {} folders\n  📄 {} files\n  💾 {}\n\n  Press 'q' to cancel",
+                phase_name,
                 root.display(),
+                stage_line,
                 dirs,
                 files,
                 size_str
@@ -86,7 +112,7 @@ pub fn run(root: PathBuf, config: Arc<Config>) -> io::Result<()> {
 
             let block = Block::default()
                 .borders(Borders::ALL)
-                .title(" Cleaner - Scanning ");
+                .title(format!(" Cleaner - {phase_title} "));
             let paragraph = Paragraph::new(text).block(block);
             f.render_widget(paragraph, area);
         })?;
@@ -94,11 +120,11 @@ pub fn run(root: PathBuf, config: Arc<Config>) -> io::Result<()> {
         // Non-blocking key check for quit
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
-                        user_quit = true;
-                        cancelled.store(true, Ordering::Relaxed);
-                    }
+                if key.kind == KeyEventKind::Press
+                    && matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
+                {
+                    user_quit = true;
+                    cancelled.store(true, Ordering::Relaxed);
                 }
             }
         }
@@ -170,4 +196,3 @@ where
         }
     }
 }
-

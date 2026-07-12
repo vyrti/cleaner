@@ -58,9 +58,8 @@ pub fn read_dir_bulk(path: &Path) -> std::io::Result<Vec<RawEntry>> {
     let path_str = path.to_str().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid UTF-8 path")
     })?;
-    let path_cstr = CString::new(path_str).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, e)
-    })?;
+    let path_cstr = CString::new(path_str)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
 
     let fd = unsafe {
         libc::open(
@@ -109,15 +108,23 @@ pub fn read_dir_bulk(path: &Path) -> std::io::Result<Vec<RawEntry>> {
         let mut ptr = buffer.as_ptr();
         for _ in 0..result {
             let header = unsafe { &*(ptr as *const EntryHeader) };
-            
+
             // Extract the filename using the attrreference_t offset
-            let name_info_ptr = unsafe { (ptr as *const u8).offset(24) };
-            let name_ptr = unsafe { name_info_ptr.offset(header.name_info.attr_dataoffset as isize) };
-            let name_bytes = unsafe { std::slice::from_raw_parts(name_ptr, header.name_info.attr_length as usize) };
-            
+            let name_info_ptr = unsafe { ptr.offset(24) };
+            let name_ptr =
+                unsafe { name_info_ptr.offset(header.name_info.attr_dataoffset as isize) };
+            let name_bytes = unsafe {
+                std::slice::from_raw_parts(name_ptr, header.name_info.attr_length as usize)
+            };
+
             // attr_length includes a trailing null byte or padding
-            let len = name_bytes.iter().position(|&b| b == 0).unwrap_or(name_bytes.len());
-            let name = std::str::from_utf8(&name_bytes[..len]).unwrap_or("").to_string();
+            let len = name_bytes
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(name_bytes.len());
+            let name = std::str::from_utf8(&name_bytes[..len])
+                .unwrap_or("")
+                .to_string();
 
             // Skip "." and ".."
             if name == "." || name == ".." {
@@ -127,13 +134,15 @@ pub fn read_dir_bulk(path: &Path) -> std::io::Result<Vec<RawEntry>> {
 
             let is_dir = header.obj_type == VDIR;
             let is_symlink = header.obj_type == VLNK;
-            
+
             // Extract file size if it's a regular file
-            let size = if !is_dir && !is_symlink && (header.returned.fileattr & ATTR_FILE_DATALENGTH) != 0 {
-                header.data_length
-            } else {
-                0
-            };
+            let size =
+                if !is_dir && !is_symlink && (header.returned.fileattr & ATTR_FILE_DATALENGTH) != 0
+                {
+                    header.data_length
+                } else {
+                    0
+                };
 
             result_entries.push(RawEntry {
                 name,

@@ -8,10 +8,11 @@ pub fn read_dir_fstatat(path: &Path) -> std::io::Result<Vec<RawEntry>> {
         path,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
         Mode::empty(),
-    ).map_err(|e| std::io::Error::from_raw_os_error(e.raw_os_error()))?;
+    )
+    .map_err(|e| std::io::Error::from_raw_os_error(e.raw_os_error()))?;
 
-    let mut dir = Dir::read_from(&dir_fd)
-        .map_err(|e| std::io::Error::from_raw_os_error(e.raw_os_error()))?;
+    let mut dir =
+        Dir::read_from(&dir_fd).map_err(|e| std::io::Error::from_raw_os_error(e.raw_os_error()))?;
 
     let mut result = Vec::with_capacity(256);
 
@@ -29,11 +30,7 @@ pub fn read_dir_fstatat(path: &Path) -> std::io::Result<Vec<RawEntry>> {
         let is_symlink = entry.file_type() == rustix::fs::FileType::Symlink;
 
         let size = if !is_dir && !is_symlink {
-            match rustix::fs::statat(
-                dir_fd.as_fd(),
-                name_cstr,
-                AtFlags::SYMLINK_NOFOLLOW,
-            ) {
+            match rustix::fs::statat(dir_fd.as_fd(), name_cstr, AtFlags::SYMLINK_NOFOLLOW) {
                 Ok(stat) => stat.st_size as u64,
                 Err(_) => 0,
             }

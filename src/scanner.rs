@@ -2,14 +2,23 @@
 //! Configured for maximum performance with rayon thread pool
 
 use crate::config::Config;
-use crate::patterns::PatternMatcher;
-use crossbeam_channel::Sender;
 use crate::fastwalk;
+use crate::patterns::PatternMatcher;
 use crate::pool::SCAN_POOL;
+use crossbeam_channel::Sender;
 #[allow(unused_imports)]
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+
+fn passes_age_filter(path: &Path, days: Option<u64>) -> bool {
+    let Some(days) = days else { return true };
+    std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|elapsed| elapsed.as_secs() > days.saturating_mul(24 * 60 * 60))
+}
 
 /// Result of scanning - a path to delete and whether it's a directory
 #[derive(Debug, Clone)]
@@ -49,8 +58,8 @@ impl Scanner {
         #[cfg(target_os = "macos")]
         let docker_path: Option<PathBuf> = {
             if let Some(home) = std::env::var_os("HOME") {
-                let docker_container = PathBuf::from(home)
-                    .join("Library/Containers/com.docker.docker");
+                let docker_container =
+                    PathBuf::from(home).join("Library/Containers/com.docker.docker");
                 if docker_container.exists() {
                     Some(docker_container)
                 } else {
@@ -165,6 +174,7 @@ impl Scanner {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn walk_scanner(
     scope: &rayon::Scope<'_>,
     dir: PathBuf,
@@ -196,7 +206,10 @@ fn walk_scanner(
         }
 
         // Calculate if path is in a protected system directory (where we won't auto-delete)
-        let in_protected = !config.force && protected_paths.iter().any(|p| path.starts_with(p) && !root.starts_with(p));
+        let in_protected = !config.force
+            && protected_paths
+                .iter()
+                .any(|p| path.starts_with(p) && !root.starts_with(p));
 
         // 3. Skip macOS OS mounts to prevent duplicate scans
         #[cfg(target_os = "macos")]
@@ -215,17 +228,7 @@ fn walk_scanner(
 
         if e.is_dir {
             if !in_protected && matcher.is_temp_directory(&e.name) {
-                let should_delete = if let Some(days) = config.days {
-                    if let Ok(metadata) = std::fs::metadata(&path) {
-                        if let Ok(modified) = metadata.modified() {
-                            if let Ok(elapsed) = modified.elapsed() {
-                                elapsed.as_secs() > days * 24 * 60 * 60
-                            } else { false }
-                        } else { false }
-                    } else { false }
-                } else {
-                    true
-                };
+                let should_delete = passes_age_filter(&path, config.days);
 
                 if should_delete {
                     let _ = tx.send(ScanResult {
@@ -242,17 +245,7 @@ fn walk_scanner(
             }
         } else {
             if !in_protected && matcher.is_temp_file(&e.name) {
-                let should_delete = if let Some(days) = config.days {
-                    if let Ok(metadata) = std::fs::metadata(&path) {
-                        if let Ok(modified) = metadata.modified() {
-                            if let Ok(elapsed) = modified.elapsed() {
-                                elapsed.as_secs() > days * 24 * 60 * 60
-                            } else { false }
-                        } else { false }
-                    } else { false }
-                } else {
-                    true
-                };
+                let should_delete = passes_age_filter(&path, config.days);
 
                 if should_delete {
                     let _ = tx.send(ScanResult {
@@ -287,5 +280,77 @@ fn walk_scanner(
                 root,
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::TempDir;
+    use crossbeam_channel::unbounded;
+
+    fn config(days: Option<u64>) -> Arc<Config> {
+        Arc::new(Config {
+            directories: vec!["target".into()],
+            files: vec![".pyc".into()],
+            days,
+            force: false,
+        })
+    }
+
+    #[test]
+    fn scanner_finds_files_and_prunes_matched_directories() {
+        let temp = TempDir::new("scanner-match");
+        temp.write("module.pyc", b"1234");
+        temp.write("source.rs", b"keep");
+        temp.write("nested/other.pyc", b"12");
+        temp.write("target/inside.pyc", b"not scanned after directory match");
+        let (tx, rx) = unbounded();
+        let scanned = Scanner::new(temp.path().to_path_buf(), 2, config(None)).scan(tx);
+        let mut results: Vec<_> = rx.iter().collect();
+        results.sort_by(|a, b| a.path.cmp(&b.path));
+        assert_eq!(results.len(), 3);
+        assert!(results
+            .iter()
+            .any(|r| r.path == temp.join("module.pyc") && !r.is_dir && r.size == 4));
+        assert!(results
+            .iter()
+            .any(|r| r.path == temp.join("nested/other.pyc") && !r.is_dir));
+        assert!(results
+            .iter()
+            .any(|r| r.path == temp.join("target") && r.is_dir));
+        assert_eq!(scanned, 5);
+    }
+
+    #[test]
+    fn age_filter_keeps_recent_items_and_handles_huge_values() {
+        let temp = TempDir::new("scanner-age");
+        let file = temp.write("recent.pyc", b"data");
+        assert!(passes_age_filter(&file, None));
+        assert!(!passes_age_filter(&file, Some(u64::MAX)));
+        assert!(!passes_age_filter(&temp.join("missing"), Some(1)));
+
+        let (tx, rx) = unbounded();
+        Scanner::new(temp.path().to_path_buf(), 1, config(Some(u64::MAX))).scan(tx);
+        assert!(rx.iter().next().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scanner_does_not_follow_directory_symlinks() {
+        use std::os::unix::fs::symlink;
+        let temp = TempDir::new("scanner-link");
+        temp.write("outside/file.pyc", b"data");
+        symlink(temp.join("outside"), temp.join("linked-dir")).unwrap();
+        let (tx, rx) = unbounded();
+        Scanner::new(temp.path().to_path_buf(), 1, config(None)).scan(tx);
+        let results: Vec<_> = rx.iter().collect();
+        assert_eq!(
+            results
+                .iter()
+                .filter(|r| r.path.ends_with("file.pyc"))
+                .count(),
+            1
+        );
     }
 }
