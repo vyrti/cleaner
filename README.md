@@ -49,35 +49,42 @@ docker pull ghcr.io/vyrti/cleaner:latest
 
 ## Usage
 
-By default, running `cleaner` without any path arguments launches the interactive TUI mode starting in your home directory (no files are deleted automatically). If a folder path is specified, it runs in non-interactive CLI scripting/devops mode.
+By default, running `cleaner` (with or without a path argument) launches the interactive TUI mode (no files are deleted automatically). 
+
+To run in non-interactive CLI scripting/devops mode, you must explicitly pass `--json` (which runs in dry-run mode by default) or `-y`/`--confirm` (which executes live deletions).
 
 ```bash
+# Launch interactive TUI mode starting in the home directory
+cleaner
 
-# Scan specific folder in CLI scripting mode (shows scan and deletes matching temp files)
+# Launch interactive TUI mode starting in a specific folder
 cleaner ~/Projects
 
-# Preview what would be deleted in CLI mode (safe dry-run)
-cleaner ~/Projects --dry-run
+# Run non-interactive CLI scripting mode and delete matching files (requires --confirm)
+cleaner ~/Projects --confirm
 
-# Scripting/DevOps mode: output structured JSON (dry-run)
-cleaner ~/Projects --dry-run --json
+# Scripting/DevOps mode: output structured JSON (dry-run by default)
+cleaner ~/Projects --json
+
+# Scripting/DevOps mode: output structured JSON and delete matching files
+cleaner ~/Projects --json --confirm
 
 # Filter by age (only delete items older than 7 days)
-cleaner ~/Projects --days 7
+cleaner ~/Projects --confirm --days 7
 ```
 
 ### Options
 
 | Flag | Description |
 |------|-------------|
-| `[PATH]` | Target folder to scan (positional). If omitted, launches TUI mode in home directory. |
-| `-d, --dry-run` | Preview without deleting |
+| `[PATH]` | Target folder to scan (positional). If omitted, defaults to home directory. |
+| `-y, --confirm` | Confirm deletion (live run) - actually delete files instead of dry-run (forces CLI mode) |
 | `-v, --verbose` | Show all matched paths |
 | `-f, --folder` | Target folder to scan (alternative to positional) |
 | `-c, --config` | Path to TOML config file |
 | `-j, --threads` | Number of threads (default: CPU cores) |
 | `--days` | Only delete items older than N days |
-| `--json` | Output results in JSON format (scripting/devops mode) |
+| `--json` | Output results in JSON format (forces CLI mode) |
 
 ## Configuration
 

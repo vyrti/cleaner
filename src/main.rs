@@ -43,9 +43,9 @@ struct Args {
     #[arg(short = 'c', long = "config")]
     config: Option<PathBuf>,
 
-    /// Dry run - show what would be deleted without actually deleting
-    #[arg(short = 'd', long = "dry-run", default_value = "false")]
-    dry_run: bool,
+    /// Confirm deletion (live run) - actually delete files instead of dry-run
+    #[arg(short = 'y', long = "confirm", default_value = "false")]
+    confirm: bool,
 
     /// Verbose output - show all matched paths
     #[arg(short = 'v', long = "verbose", default_value = "false")]
@@ -67,7 +67,7 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
-    let is_interactive = args.path.is_none() && args.folder.is_none() && !args.json;
+    let is_interactive = !args.json && !args.confirm;
 
     // Resolve folder: positional > --folder > home directory
     let folder = args.path
@@ -158,7 +158,7 @@ fn main() {
         );
         println!();
 
-        if args.dry_run {
+        if !args.confirm {
             println!(
                 "  {} {}",
                 "Mode:".bright_yellow().bold(),
@@ -249,7 +249,7 @@ fn main() {
     });
 
     // Create deleter
-    let deleter = deleter::Deleter::new(Arc::clone(&stats), args.dry_run, args.verbose && !args.json);
+    let deleter = deleter::Deleter::new(Arc::clone(&stats), !args.confirm, args.verbose && !args.json);
 
     // Process deletions (this blocks until scanner finishes and channel closes)
     deleter.process(rx);
@@ -265,7 +265,7 @@ fn main() {
     let elapsed = start.elapsed();
 
     if args.json {
-        let mode = if args.dry_run { "dry-run" } else { "live" };
+        let mode = if !args.confirm { "dry-run" } else { "live" };
         println!(
             "{{\"success\":true,\"mode\":\"{}\",\"target\":\"{}\",\"scanned_entries\":{},\"time_ms\":{},\"deleted_directories\":{},\"deleted_files\":{},\"bytes_freed\":{},\"errors\":{}}}",
             mode,
@@ -290,7 +290,7 @@ fn main() {
     println!("  {}", "Results:".bright_green().bold());
     println!();
 
-    if args.dry_run {
+    if !args.confirm {
         println!(
             "    {} {} directories",
             "Would delete:".yellow(),
