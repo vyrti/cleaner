@@ -437,7 +437,7 @@ impl App {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn get_disk_usage(path: &std::path::Path) -> Option<(u64, u64)> {
     use std::ffi::CString;
     let path_str = path.to_str()?;
@@ -450,6 +450,24 @@ fn get_disk_usage(path: &std::path::Path) -> Option<(u64, u64)> {
             } else {
                 stat.f_bsize as u64
             };
+            let total = block_size * stat.f_blocks as u64;
+            let free = block_size * stat.f_bavail as u64;
+            Some((total, free))
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(target_os = "freebsd")]
+fn get_disk_usage(path: &std::path::Path) -> Option<(u64, u64)> {
+    use std::ffi::CString;
+    let path_str = path.to_str()?;
+    let c_path = CString::new(path_str).ok()?;
+    unsafe {
+        let mut stat: libc::statfs = std::mem::zeroed();
+        if libc::statfs(c_path.as_ptr(), &mut stat) == 0 {
+            let block_size = stat.f_bsize as u64;
             let total = block_size * stat.f_blocks as u64;
             let free = block_size * stat.f_bavail as u64;
             Some((total, free))

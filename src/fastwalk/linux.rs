@@ -32,7 +32,7 @@ pub fn read_dir_fstatat(path: &Path) -> std::io::Result<Vec<RawEntry>> {
             match rustix::fs::statat(
                 dir_fd.as_fd(),
                 name_cstr,
-                AtFlags::AT_SYMLINK_NOFOLLOW,
+                AtFlags::SYMLINK_NOFOLLOW,
             ) {
                 Ok(stat) => stat.st_size as u64,
                 Err(_) => 0,

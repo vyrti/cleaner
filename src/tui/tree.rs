@@ -77,6 +77,7 @@ impl DirTree {
         #[cfg(not(target_os = "macos"))]
         let docker_path: Option<PathBuf> = None;
 
+        #[cfg(target_os = "macos")]
         let root_clone = root.clone();
         let skip_check = Arc::new(move |path: &Path| -> bool {
             if let Some(ref docker) = docker_path {

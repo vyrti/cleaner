@@ -6,6 +6,7 @@ use crate::patterns::PatternMatcher;
 use crossbeam_channel::Sender;
 use crate::fastwalk;
 use crate::pool::SCAN_POOL;
+#[allow(unused_imports)]
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
