@@ -4,6 +4,7 @@
 use crate::patterns::PatternMatcher;
 use crate::fastwalk;
 use crate::pool::SCAN_POOL;
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
@@ -117,32 +118,33 @@ impl DirTree {
             return Self { children: HashMap::new() };
         }
 
-        // 2. Build the children map using pre-allocated capacity
-        let mut children: HashMap<PathBuf, Vec<DirEntry>> = HashMap::with_capacity(raw_tree.len());
+        // 2. Build the children map using parallel Rayon iteration
+        let mut children: HashMap<PathBuf, Vec<DirEntry>> = raw_tree
+            .into_par_iter()
+            .map(|(dir_path, entries)| {
+                let dir_entries: Vec<DirEntry> = entries
+                    .into_iter()
+                    .filter(|e| !e.is_symlink)
+                    .map(|e| {
+                        let full_path = dir_path.join(&e.name);
+                        let is_temp = if e.is_dir {
+                            matcher.is_temp_directory(&e.name)
+                        } else {
+                            matcher.is_temp_file(&e.name)
+                        };
 
-        for (dir_path, entries) in &raw_tree {
-            let dir_entries: Vec<DirEntry> = entries
-                .iter()
-                .filter(|e| !e.is_symlink)
-                .map(|e| {
-                    let full_path = dir_path.join(&e.name);
-                    let is_temp = if e.is_dir {
-                        matcher.is_temp_directory(&e.name)
-                    } else {
-                        matcher.is_temp_file(&e.name)
-                    };
-
-                    DirEntry {
-                        path: full_path,
-                        name: e.name.clone(),
-                        size: e.size,
-                        is_dir: e.is_dir,
-                        is_temp,
-                    }
-                })
-                .collect();
-            children.insert(dir_path.clone(), dir_entries);
-        }
+                        DirEntry {
+                            path: full_path,
+                            name: e.name,
+                            size: e.size,
+                            is_dir: e.is_dir,
+                            is_temp,
+                        }
+                    })
+                    .collect();
+                (dir_path, dir_entries)
+            })
+            .collect();
 
         if cancelled.load(Ordering::Relaxed) {
             progress.done.store(true, Ordering::Relaxed);
@@ -155,24 +157,25 @@ impl DirTree {
         let mut size_cache: HashMap<PathBuf, u64> = HashMap::with_capacity(children.len());
         compute_dir_size(root, &children, &mut size_cache);
 
-        // 4. Apply computed sizes to directory entries in children map
-        for entries in children.values_mut() {
+        // 4. Apply computed sizes, sort entries, and add ".." navigation in parallel
+        let root_clone = root.clone();
+        children.par_iter_mut().for_each(|(dir_path, entries)| {
+            // Apply sizing to directory entries
             for entry in entries.iter_mut() {
                 if entry.is_dir {
                     entry.size = *size_cache.get(&entry.path).unwrap_or(&0);
                 }
             }
-        }
 
-        // 5. Sort entries and add ".." navigation
-        for (dir_path, entries) in children.iter_mut() {
+            // Sort entries
             entries.sort_unstable_by(|a, b| match (a.is_dir, b.is_dir) {
                 (true, false) => std::cmp::Ordering::Less,
                 (false, true) => std::cmp::Ordering::Greater,
                 _ => b.size.cmp(&a.size),
             });
 
-            if dir_path != root {
+            // Add navigation
+            if dir_path != &root_clone {
                 if let Some(parent) = dir_path.parent() {
                     entries.insert(
                         0,
@@ -186,7 +189,7 @@ impl DirTree {
                     );
                 }
             }
-        }
+        });
 
         progress.done.store(true, Ordering::Relaxed);
         Self { children }
