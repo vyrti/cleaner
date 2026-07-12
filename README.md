@@ -10,9 +10,8 @@
 
 ## Features
 
-- **Ultra-Fast** - Parallel scanning with [jwalk](https://crates.io/crates/jwalk) + [rayon](https://crates.io/crates/rayon) uses all CPU cores
+- **Ultra-Fast** - Parallel scanning uses all CPU cores
 - **Smart Deletion** - Finds and removes common dev artifacts: `node_modules`, `.terraform`, `target`, `__pycache__`, etc.
-- **Optional TUI** - ncdu-style interactive browser with instant navigation (`-i` flag)
 - **Configurable** - TOML config + environment variables
 - **Safe** - Dry-run mode and time-based filtering (`--days`)
 - **Cross-platform** - Windows, Linux, macOS, FreeBSD | ARM64 and x64
@@ -53,8 +52,6 @@ docker pull ghcr.io/vyrti/cleaner:latest
 By default, running `cleaner` without any path arguments launches the interactive TUI mode starting in your home directory (no files are deleted automatically). If a folder path is specified, it runs in non-interactive CLI scripting/devops mode.
 
 ```bash
-# Launch interactive TUI mode on your home directory
-cleaner
 
 # Scan specific folder in CLI scripting mode (shows scan and deletes matching temp files)
 cleaner ~/Projects

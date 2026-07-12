@@ -62,6 +62,8 @@ jobs:
             name: freebsd-arm64
             ext: ""
             cross: true
+            toolchain: nightly
+            build-std: true
 
     runs-on: ${{ matrix.os }}
     name: Build (${{ matrix.name }})
@@ -72,7 +74,9 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: ${{ matrix.toolchain || 'stable' }}
           targets: ${{ !matrix.cross && matrix.target || '' }}
+          components: ${{ matrix.toolchain == 'nightly' && 'rust-src' || '' }}
 
       - name: Install cross-compilation tools
         if: matrix.cross
@@ -85,7 +89,13 @@ jobs:
 
       - name: Build release (cross)
         if: matrix.cross
-        run: cross build --release --target ${{ matrix.target }}
+        shell: bash
+        run: |
+          if [ "${{ matrix.build-std }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }} -Z build-std
+          else
+            cross build --release --target ${{ matrix.target }}
+          fi
 
       - name: Prepare artifact
         shell: bash
