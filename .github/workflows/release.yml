@@ -57,6 +57,11 @@ jobs:
             name: freebsd-x64
             ext: ""
             cross: true
+          - os: ubuntu-latest
+            target: aarch64-unknown-freebsd
+            name: freebsd-arm64
+            ext: ""
+            cross: true
 
     runs-on: ${{ matrix.os }}
     name: Build (${{ matrix.name }})

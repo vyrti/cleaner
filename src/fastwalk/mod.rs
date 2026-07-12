@@ -5,7 +5,7 @@ use rayon::ThreadPool;
 
 #[cfg(target_os = "macos")]
 mod mac;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 mod linux;
 
 #[derive(Debug, Clone)]
@@ -21,11 +21,11 @@ pub fn read_dir_fast(path: &Path) -> std::io::Result<Vec<RawEntry>> {
     {
         mac::read_dir_bulk(path)
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     {
         linux::read_dir_fstatat(path)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "freebsd")))]
     {
         let read_dir = std::fs::read_dir(path)?;
         let mut result = Vec::with_capacity(256);

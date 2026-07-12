@@ -50,36 +50,37 @@ docker pull ghcr.io/vyrti/cleaner:latest
 
 ## Usage
 
+By default, running `cleaner` without any path arguments launches the interactive TUI mode starting in your home directory (no files are deleted automatically). If a folder path is specified, it runs in non-interactive CLI scripting/devops mode.
+
 ```bash
-# Quick scan and delete (defaults to home directory)
+# Launch interactive TUI mode on your home directory
 cleaner
 
-# Scan specific folder
+# Scan specific folder in CLI scripting mode (shows scan and deletes matching temp files)
 cleaner ~/Projects
 
-# Preview what would be deleted (safe)
+# Preview what would be deleted in CLI mode (safe dry-run)
 cleaner ~/Projects --dry-run
+
+# Scripting/DevOps mode: output structured JSON (dry-run)
+cleaner ~/Projects --dry-run --json
 
 # Filter by age (only delete items older than 7 days)
 cleaner ~/Projects --days 7
-
-# Interactive TUI mode (optional - for browsing)
-cleaner -i
-cleaner -i ~/Projects
 ```
 
 ### Options
 
 | Flag | Description |
 |------|-------------|
-| `[PATH]` | Target folder to scan (positional, defaults to home directory) |
-| `-i, --interactive` | **Optional** interactive TUI mode for browsing |
+| `[PATH]` | Target folder to scan (positional). If omitted, launches TUI mode in home directory. |
 | `-d, --dry-run` | Preview without deleting |
 | `-v, --verbose` | Show all matched paths |
 | `-f, --folder` | Target folder to scan (alternative to positional) |
 | `-c, --config` | Path to TOML config file |
 | `-j, --threads` | Number of threads (default: CPU cores) |
 | `--days` | Only delete items older than N days |
+| `--json` | Output results in JSON format (scripting/devops mode) |
 
 ## Configuration
 
@@ -135,6 +136,14 @@ docker run -v /path/to/scan:/data ghcr.io/vyrti/cleaner -f /data --dry-run
 # With env vars
 docker run -e CLEANER_DIRS=".terraform,target" -v /path:/data ghcr.io/vyrti/cleaner -f /data
 ```
+
+## macOS Disk Space Discrepancy
+
+When running the interactive TUI on macOS, you may notice a difference between the size of the scanned directory tree (indicated by **Folder**) and the total filesystem space reported by **Disk Used**. This is expected due to the following macOS behaviors:
+
+1. **Binary vs. Decimal Units**: macOS Finder and System Settings display disk space in decimal GB ($1000^3$ bytes). The TUI uses binary GiB ($1024^3$ bytes). For a $220\text{ GB}$ disk, the base-2 unit conversion alone accounts for a **$15\text{ GiB}$** difference ($220\text{ GB} \approx 205\text{ GiB}$).
+2. **APFS Container Sharing**: Under Apple File System (APFS), all volumes in the same container pool (e.g., `System`, `Data`, `VM/Swap`, and `Recovery`) share the same physical storage pool. The `Disk Used` stat queries the shared container level, which includes system files and virtual memory swap space that are not part of your local scanned data.
+3. **System Integrity Protection (SIP) & Permissions**: macOS blocks applications from inspecting system-managed caches, VM swap space, and protected user folders (like `/private/var/folders/` or `/System/Library/`) even when running as `root` unless Full Disk Access is explicitly granted to the Terminal app. Scans will skip these directories, meaning they are excluded from the calculated `Folder` size but still counted under `Disk Used`.
 
 ## Third-Party Code
 

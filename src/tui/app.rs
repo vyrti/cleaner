@@ -437,6 +437,7 @@ impl App {
     }
 }
 
+#[cfg(unix)]
 fn get_disk_usage(path: &std::path::Path) -> Option<(u64, u64)> {
     use std::ffi::CString;
     let path_str = path.to_str()?;
@@ -456,4 +457,44 @@ fn get_disk_usage(path: &std::path::Path) -> Option<(u64, u64)> {
             None
         }
     }
+}
+
+#[cfg(windows)]
+fn get_disk_usage(path: &std::path::Path) -> Option<(u64, u64)> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::ffi::OsStr;
+
+    extern "system" {
+        fn GetDiskFreeSpaceExW(
+            lpDirectoryName: *const u16,
+            lpFreeBytesAvailableToCaller: *mut u64,
+            lpTotalNumberOfBytes: *mut u64,
+            lpTotalNumberOfFreeBytes: *mut u64,
+        ) -> i32;
+    }
+
+    let mut path_u16: Vec<u16> = OsStr::new(path).encode_wide().collect();
+    path_u16.push(0);
+
+    let mut free_bytes = 0u64;
+    let mut total_bytes = 0u64;
+    let mut total_free = 0u64;
+
+    unsafe {
+        if GetDiskFreeSpaceExW(
+            path_u16.as_ptr(),
+            &mut free_bytes,
+            &mut total_bytes,
+            &mut total_free,
+        ) != 0 {
+            Some((total_bytes, free_bytes))
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn get_disk_usage(_path: &std::path::Path) -> Option<(u64, u64)> {
+    None
 }

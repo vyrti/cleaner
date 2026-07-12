@@ -59,37 +59,54 @@ struct Args {
     #[arg(long = "days")]
     days: Option<u64>,
 
-    /// Interactive TUI mode (ncdu-like)
-    #[arg(short = 'i', long = "interactive")]
-    interactive: bool,
+    /// Output results in JSON format (scripting/devops mode)
+    #[arg(long = "json", default_value = "false")]
+    json: bool,
 }
 
 fn main() {
     let args = Args::parse();
 
+    let is_interactive = args.path.is_none() && args.folder.is_none() && !args.json;
+
     // Resolve folder: positional > --folder > home directory
     let folder = args.path
-        .or(args.folder)
+        .clone()
+        .or_else(|| args.folder.clone())
         .unwrap_or_else(|| {
             dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
         });
 
     // Validate folder exists
     if !folder.exists() {
-        eprintln!(
-            "{} Folder does not exist: {}",
-            "Error:".red().bold(),
-            folder.display()
-        );
+        if args.json {
+            println!(
+                "{{\"success\":false,\"error\":\"Folder does not exist: {}\"}}",
+                folder.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"")
+            );
+        } else {
+            eprintln!(
+                "{} Folder does not exist: {}",
+                "Error:".red().bold(),
+                folder.display()
+            );
+        }
         std::process::exit(1);
     }
 
     if !folder.is_dir() {
-        eprintln!(
-            "{} Path is not a directory: {}",
-            "Error:".red().bold(),
-            folder.display()
-        );
+        if args.json {
+            println!(
+                "{{\"success\":false,\"error\":\"Path is not a directory: {}\"}}",
+                folder.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"")
+            );
+        } else {
+            eprintln!(
+                "{} Path is not a directory: {}",
+                "Error:".red().bold(),
+                folder.display()
+            );
+        }
         std::process::exit(1);
     }
 
@@ -106,8 +123,8 @@ fn main() {
     
     let config = Arc::new(config);
 
-    // Interactive TUI mode
-    if args.interactive {
+    // Interactive TUI mode by default when run without folder/path arguments
+    if is_interactive {
         if let Err(e) = tui::run(folder, config) {
             eprintln!("{} TUI error: {}", "Error:".red().bold(), e);
             std::process::exit(1);
@@ -118,85 +135,87 @@ fn main() {
     // Determine thread count
     let num_threads = args.threads.unwrap_or_else(num_cpus::get);
 
-    // Print header
-    println!();
-    println!(
-        "{}",
-        "╔══════════════════════════════════════════════════════════════╗"
-            .bright_cyan()
-            .bold()
-    );
-    println!(
-        "{}",
-        "║                    FOLDER CLEANER v0.1.0                     ║"
-            .bright_cyan()
-            .bold()
-    );
-    println!(
-        "{}",
-        "╚══════════════════════════════════════════════════════════════╝"
-            .bright_cyan()
-            .bold()
-    );
-    println!();
+    if !args.json {
+        // Print header
+        println!();
+        println!(
+            "{}",
+            "╔══════════════════════════════════════════════════════════════╗"
+                .bright_cyan()
+                .bold()
+        );
+        println!(
+            "{}",
+            "║                    FOLDER CLEANER v0.1.0                     ║"
+                .bright_cyan()
+                .bold()
+        );
+        println!(
+            "{}",
+            "╚══════════════════════════════════════════════════════════════╝"
+                .bright_cyan()
+                .bold()
+        );
+        println!();
 
-    if args.dry_run {
+        if args.dry_run {
+            println!(
+                "  {} {}",
+                "Mode:".bright_yellow().bold(),
+                "DRY RUN (no files will be deleted)".yellow()
+            );
+        } else {
+            println!(
+                "  {} {}",
+                "Mode:".bright_red().bold(),
+                "LIVE (files will be permanently deleted!)".red()
+            );
+        }
+
         println!(
             "  {} {}",
-            "Mode:".bright_yellow().bold(),
-            "DRY RUN (no files will be deleted)".yellow()
+            "Target:".bright_white().bold(),
+            folder.display()
         );
-    } else {
+
+        if let Some(ref config_path) = args.config {
+            println!(
+                "  {} {}",
+                "Config:".bright_white().bold(),
+                config_path.display()
+            );
+        }
+
         println!(
             "  {} {}",
-            "Mode:".bright_red().bold(),
-            "LIVE (files will be permanently deleted!)".red()
+            "Threads:".bright_white().bold(),
+            num_threads
         );
-    }
 
-    println!(
-        "  {} {}",
-        "Target:".bright_white().bold(),
-        folder.display()
-    );
+        if let Some(days) = config.days {
+            println!(
+                "  {} {} days (items modified within this time are safe)",
+                "Filter:".bright_white().bold(),
+                days
+            );
+        }
 
-    if let Some(ref config_path) = args.config {
+        println!();
+
+        // Show patterns being matched
+        println!("  {} ", "Patterns:".bright_white().bold());
         println!(
-            "  {} {}",
-            "Config:".bright_white().bold(),
-            config_path.display()
+            "    {} {}",
+            "Directories:".dimmed(),
+            config.directories.join(", ").dimmed()
         );
-    }
-
-    println!(
-        "  {} {}",
-        "Threads:".bright_white().bold(),
-        num_threads
-    );
-
-    if let Some(days) = config.days {
         println!(
-            "  {} {} days (items modified within this time are safe)",
-            "Filter:".bright_white().bold(),
-            days
+            "    {} {}",
+            "Files:".dimmed(),
+            config.files.join(", ").dimmed()
         );
+        println!();
     }
-
-    println!();
-
-    // Show patterns being matched
-    println!("  {} ", "Patterns:".bright_white().bold());
-    println!(
-        "    {} {}",
-        "Directories:".dimmed(),
-        config.directories.join(", ").dimmed()
-    );
-    println!(
-        "    {} {}",
-        "Files:".dimmed(),
-        config.files.join(", ").dimmed()
-    );
-    println!();
 
     // Create shared stats
     let stats = Arc::new(stats::Stats::new());
@@ -208,14 +227,19 @@ fn main() {
     let start = Instant::now();
 
     // Create progress bar
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.green} {msg}")
-            .unwrap(),
-    );
-    pb.set_message("Scanning directories...");
-    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+    let pb = if !args.json {
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.green} {msg}")
+                .unwrap(),
+        );
+        pb.set_message("Scanning directories...");
+        pb.enable_steady_tick(std::time::Duration::from_millis(100));
+        Some(pb)
+    } else {
+        None
+    };
 
     // Start scanner in separate thread
     let scanner = scanner::Scanner::new(folder.clone(), num_threads, Arc::clone(&config));
@@ -225,7 +249,7 @@ fn main() {
     });
 
     // Create deleter
-    let deleter = deleter::Deleter::new(Arc::clone(&stats), args.dry_run, args.verbose);
+    let deleter = deleter::Deleter::new(Arc::clone(&stats), args.dry_run, args.verbose && !args.json);
 
     // Process deletions (this blocks until scanner finishes and channel closes)
     deleter.process(rx);
@@ -234,9 +258,27 @@ fn main() {
     let scanned_count = scan_handle.join().unwrap();
 
     // Stop progress bar
-    pb.finish_and_clear();
+    if let Some(ref p) = pb {
+        p.finish_and_clear();
+    }
 
     let elapsed = start.elapsed();
+
+    if args.json {
+        let mode = if args.dry_run { "dry-run" } else { "live" };
+        println!(
+            "{{\"success\":true,\"mode\":\"{}\",\"target\":\"{}\",\"scanned_entries\":{},\"time_ms\":{},\"deleted_directories\":{},\"deleted_files\":{},\"bytes_freed\":{},\"errors\":{}}}",
+            mode,
+            folder.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\""),
+            scanned_count,
+            elapsed.as_millis(),
+            stats.directories(),
+            stats.files(),
+            stats.bytes(),
+            stats.error_count()
+        );
+        return;
+    }
 
     // Print results
     println!();

@@ -47,8 +47,8 @@ libc = "0.2"
 # High-performance allocator
 mimalloc = { version = "0.1", default-features = false }
 
-# Linux-specific file descriptor APIs
-[target.'cfg(target_os = "linux")'.dependencies]
+# Linux and FreeBSD file descriptor APIs
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 rustix = { version = "0.38", features = ["fs"] }
 
 
