@@ -101,11 +101,16 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
     } else if app.is_deleting() {
         " ⏳ Deleting... please wait".to_string()
     } else if app.confirm_clean {
+        let (dirs, files, bytes) = app.current_temp_stats();
+        let size_str = humansize::format_size(bytes, humansize::BINARY);
         format!(
-            " Clean all temp files in '{}'? (y/n)",
+            " Clean all temp files in '{}'? (y/n) - Will delete: {} folders, {} files, {} size",
             app.current_path.file_name()
                 .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| app.current_path.to_string_lossy().to_string())
+                .unwrap_or_else(|| app.current_path.to_string_lossy().to_string()),
+            dirs,
+            files,
+            size_str
         )
     } else if app.confirm_delete {
         if let Some(entry) = app.selected_entry() {

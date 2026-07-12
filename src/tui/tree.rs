@@ -77,8 +77,87 @@ impl DirTree {
         #[cfg(not(target_os = "macos"))]
         let docker_path: Option<PathBuf> = None;
 
-        #[cfg(target_os = "macos")]
         let root_clone = root.clone();
+
+        // Protected directories (NEVER auto-clean inside these, but allow scanning and manual TUI deletion)
+        let mut protected_paths: Vec<PathBuf> = vec![];
+
+        // Home-relative paths
+        if let Some(home) = dirs::home_dir() {
+            protected_paths.extend(vec![
+                home.join(".cargo"),
+                home.join(".rustup"),
+                home.join("go"),
+                home.join(".go"),
+                home.join(".npm"),
+                home.join(".nvm"),
+                home.join(".pyenv"),
+                home.join(".rbenv"),
+                home.join(".gradle"),
+                home.join(".m2"),
+                home.join(".local"),
+                home.join(".config"),
+                home.join(".ssh"),
+                home.join(".gnupg"),
+                home.join("Library"),
+            ]);
+            #[cfg(windows)]
+            {
+                protected_paths.push(home.join("AppData"));
+            }
+        }
+
+        // Unix system directories
+        #[cfg(unix)]
+        {
+            protected_paths.extend(vec![
+                PathBuf::from("/System"),
+                PathBuf::from("/Library"),
+                PathBuf::from("/Applications"),
+                PathBuf::from("/usr"),
+                PathBuf::from("/var"),
+                PathBuf::from("/etc"),
+                PathBuf::from("/bin"),
+                PathBuf::from("/sbin"),
+                PathBuf::from("/lib"),
+                PathBuf::from("/lib64"),
+                PathBuf::from("/boot"),
+                PathBuf::from("/opt"),
+                PathBuf::from("/private"),
+                PathBuf::from("/dev"),
+                PathBuf::from("/proc"),
+                PathBuf::from("/sys"),
+                PathBuf::from("/run"),
+            ]);
+        }
+
+        // Windows system directories
+        #[cfg(windows)]
+        {
+            if let Some(win_dir) = std::env::var_os("SystemRoot").map(PathBuf::from) {
+                protected_paths.push(win_dir);
+            } else {
+                protected_paths.push(PathBuf::from("C:\\Windows"));
+            }
+            if let Some(prog_files) = std::env::var_os("ProgramFiles").map(PathBuf::from) {
+                protected_paths.push(prog_files);
+            } else {
+                protected_paths.push(PathBuf::from("C:\\Program Files"));
+            }
+            if let Some(prog_files_x86) = std::env::var_os("ProgramFiles(x86)").map(PathBuf::from) {
+                protected_paths.push(prog_files_x86);
+            } else {
+                protected_paths.push(PathBuf::from("C:\\Program Files (x86)"));
+            }
+            if let Some(prog_data) = std::env::var_os("ProgramData").map(PathBuf::from) {
+                protected_paths.push(prog_data);
+            } else {
+                protected_paths.push(PathBuf::from("C:\\ProgramData"));
+            }
+            protected_paths.push(PathBuf::from("C:\\System Volume Information"));
+        }
+
+        let protected_paths_arc = Arc::new(protected_paths);
         let skip_check = Arc::new(move |path: &Path| -> bool {
             if let Some(ref docker) = docker_path {
                 if path.starts_with(docker) {
@@ -120,15 +199,22 @@ impl DirTree {
         }
 
         // 2. Build the children map using parallel Rayon iteration
+        let protected_paths_clone = Arc::clone(&protected_paths_arc);
+        let root_clone2 = root.clone();
         let mut children: HashMap<PathBuf, Vec<DirEntry>> = raw_tree
             .into_par_iter()
             .map(|(dir_path, entries)| {
+                let protected_paths = Arc::clone(&protected_paths_clone);
+                let root_path = root_clone2.clone();
                 let dir_entries: Vec<DirEntry> = entries
                     .into_iter()
                     .filter(|e| !e.is_symlink)
                     .map(|e| {
                         let full_path = dir_path.join(&e.name);
-                        let is_temp = if e.is_dir {
+                        let in_protected = protected_paths.iter().any(|p| full_path.starts_with(p) && !root_path.starts_with(p));
+                        let is_temp = if in_protected {
+                            false
+                        } else if e.is_dir {
                             matcher.is_temp_directory(&e.name)
                         } else {
                             matcher.is_temp_file(&e.name)
@@ -262,6 +348,36 @@ impl DirTree {
         if is_dir {
             self.children.remove(path);
         }
+    }
+
+    pub fn get_temp_stats(&self, dir: &Path) -> (usize, usize, u64) {
+        let mut dirs = 0;
+        let mut files = 0;
+        let mut bytes = 0;
+        
+        if let Some(entries) = self.children.get(dir) {
+            for entry in entries {
+                if entry.name == ".." {
+                    continue;
+                }
+                if entry.is_temp {
+                    if entry.is_dir {
+                        dirs += 1;
+                        bytes += entry.size;
+                    } else {
+                        files += 1;
+                        bytes += entry.size;
+                    }
+                } else if entry.is_dir {
+                    let (sub_dirs, sub_files, sub_bytes) = self.get_temp_stats(&entry.path);
+                    dirs += sub_dirs;
+                    files += sub_files;
+                    bytes += sub_bytes;
+                }
+            }
+        }
+        
+        (dirs, files, bytes)
     }
 }
 

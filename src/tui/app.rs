@@ -416,6 +416,14 @@ impl App {
         self.confirm_clean = false;
     }
 
+    pub fn current_temp_stats(&self) -> (usize, usize, u64) {
+        if let Some(ref tree) = self.tree {
+            tree.get_temp_stats(&self.current_path)
+        } else {
+            (0, 0, 0)
+        }
+    }
+
     pub fn refresh(&mut self) {
         if self.is_busy() { return; }
         self.rebuild_tree();
