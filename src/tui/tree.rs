@@ -99,8 +99,18 @@ impl DirTree {
             false
         });
 
+        let progress_clone = Arc::clone(&progress);
+        let progress_cb = Arc::new(move |is_dir: bool, size: u64| {
+            if is_dir {
+                progress_clone.dirs.fetch_add(1, Ordering::Relaxed);
+            } else {
+                progress_clone.files.fetch_add(1, Ordering::Relaxed);
+                progress_clone.bytes.fetch_add(size, Ordering::Relaxed);
+            }
+        });
+
         // 1. Walk the directory tree in parallel using native platform syscalls
-        let raw_tree = fastwalk::walk_parallel(root.clone(), &SCAN_POOL, skip_check);
+        let raw_tree = fastwalk::walk_parallel(root.clone(), &SCAN_POOL, skip_check, Some(progress_cb));
 
         if cancelled.load(Ordering::Relaxed) {
             progress.done.store(true, Ordering::Relaxed);
@@ -121,13 +131,6 @@ impl DirTree {
                     } else {
                         matcher.is_temp_file(&e.name)
                     };
-
-                    if e.is_dir {
-                        progress.dirs.fetch_add(1, Ordering::Relaxed);
-                    } else {
-                        progress.files.fetch_add(1, Ordering::Relaxed);
-                        progress.bytes.fetch_add(e.size, Ordering::Relaxed);
-                    }
 
                     DirEntry {
                         path: full_path,

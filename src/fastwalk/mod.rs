@@ -52,6 +52,7 @@ pub fn walk_parallel(
     root: PathBuf,
     pool: &ThreadPool,
     skip_check: Arc<dyn Fn(&Path) -> bool + Send + Sync>,
+    progress_callback: Option<Arc<dyn Fn(bool, u64) + Send + Sync>>,
 ) -> HashMap<PathBuf, Vec<RawEntry>> {
     let results: Arc<Mutex<HashMap<PathBuf, Vec<RawEntry>>>> =
         Arc::new(Mutex::new(HashMap::with_capacity(16384)));
@@ -59,8 +60,9 @@ pub fn walk_parallel(
     {
         let results = Arc::clone(&results);
         let skip_check = Arc::clone(&skip_check);
+        let progress_callback = progress_callback.clone();
         pool.scope(|s| {
-            walk_recursive(s, root, results, skip_check);
+            walk_recursive(s, root, results, skip_check, progress_callback);
         });
     }
 
@@ -72,11 +74,20 @@ fn walk_recursive(
     dir: PathBuf,
     results: Arc<Mutex<HashMap<PathBuf, Vec<RawEntry>>>>,
     skip_check: Arc<dyn Fn(&Path) -> bool + Send + Sync>,
+    progress_callback: Option<Arc<dyn Fn(bool, u64) + Send + Sync>>,
 ) {
     let entries = match read_dir_fast(&dir) {
         Ok(e) => e,
         Err(_) => return,
     };
+
+    if let Some(ref cb) = progress_callback {
+        for e in &entries {
+            if !e.is_symlink {
+                cb(e.is_dir, e.size);
+            }
+        }
+    }
 
     let subdirs: Vec<PathBuf> = entries
         .iter()
@@ -90,8 +101,9 @@ fn walk_recursive(
     for subdir in subdirs {
         let results = Arc::clone(&results);
         let skip_check = Arc::clone(&skip_check);
+        let progress_callback = progress_callback.clone();
         scope.spawn(move |s| {
-            walk_recursive(s, subdir, results, skip_check);
+            walk_recursive(s, subdir, results, skip_check, progress_callback);
         });
     }
 }

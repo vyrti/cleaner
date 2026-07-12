@@ -136,6 +136,14 @@ docker run -v /path/to/scan:/data ghcr.io/vyrti/cleaner -f /data --dry-run
 docker run -e CLEANER_DIRS=".terraform,target" -v /path:/data ghcr.io/vyrti/cleaner -f /data
 ```
 
+## Third-Party Code
+
+This software integrates code adapted from [getattrlistbulk-rs](https://github.com/quivent/getattrlistbulk-rs), which is dual-licensed under the MIT and Apache 2.0 licenses.
+
 ## License
 
-[Apache 2.0](LICENSE)
+Dual-licensed under either:
+
+* Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+* MIT license ([LICENSE-MIT](LICENSE-MIT))
+

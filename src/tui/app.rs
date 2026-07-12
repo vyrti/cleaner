@@ -46,6 +46,8 @@ pub struct App {
     pub status_message: Option<String>,
     pub status_time: Option<Instant>,
     pub total_size: u64,
+    pub disk_total: u64,
+    pub disk_free: u64,
     matcher: Arc<PatternMatcher>,
     tree: Option<DirTree>,
     /// Active deletion thread
@@ -72,6 +74,8 @@ impl App {
             status_message: None,
             status_time: None,
             total_size: 0,
+            disk_total: 0,
+            disk_free: 0,
             matcher,
             tree: None,
             delete_state: None,
@@ -94,6 +98,8 @@ impl App {
             status_message: None,
             status_time: None,
             total_size: 0,
+            disk_total: 0,
+            disk_free: 0,
             matcher,
             tree: Some(tree),
             delete_state: None,
@@ -137,6 +143,8 @@ impl App {
             self.apply_sort();
             self.total_size = self.entries.iter().map(|e| e.size).sum();
         }
+        
+        self.update_disk_usage();
         
         // Try to find and select the previously entered folder
         if let Some(name) = select_name {
@@ -416,5 +424,36 @@ impl App {
 
     pub fn selected_entry(&self) -> Option<&DirEntry> {
         self.entries.get(self.selected)
+    }
+
+    pub fn update_disk_usage(&mut self) {
+        if let Some((total, free)) = get_disk_usage(&self.current_path) {
+            self.disk_total = total;
+            self.disk_free = free;
+        } else {
+            self.disk_total = 0;
+            self.disk_free = 0;
+        }
+    }
+}
+
+fn get_disk_usage(path: &std::path::Path) -> Option<(u64, u64)> {
+    use std::ffi::CString;
+    let path_str = path.to_str()?;
+    let c_path = CString::new(path_str).ok()?;
+    unsafe {
+        let mut stat: libc::statvfs = std::mem::zeroed();
+        if libc::statvfs(c_path.as_ptr(), &mut stat) == 0 {
+            let block_size = if stat.f_frsize > 0 {
+                stat.f_frsize as u64
+            } else {
+                stat.f_bsize as u64
+            };
+            let total = block_size * stat.f_blocks as u64;
+            let free = block_size * stat.f_bavail as u64;
+            Some((total, free))
+        } else {
+            None
+        }
     }
 }

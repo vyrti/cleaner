@@ -33,11 +33,22 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         SortMode::Name => "name",
     };
 
+    let disk_info = if app.disk_total > 0 {
+        let disk_used = app.disk_total.saturating_sub(app.disk_free);
+        let used_str = humansize::format_size(disk_used, humansize::BINARY);
+        let free_str = humansize::format_size(app.disk_free, humansize::BINARY);
+        let free_pct = (app.disk_free as f64 / app.disk_total as f64) * 100.0;
+        format!(" │ Disk Used: {} │ Free: {} ({:.1}%)", used_str, free_str, free_pct)
+    } else {
+        "".to_string()
+    };
+
     let header = Paragraph::new(format!(
-        " {} │ Total: {} │ Sort: {} │ {} items",
+        " {} │ Folder: {} │ Sort: {}{} │ {} items",
         path_str,
         total_size,
         sort_str,
+        disk_info,
         app.entries.len()
     ))
     .block(Block::default().borders(Borders::ALL).title(" Cleaner "));
