@@ -7,7 +7,7 @@
 > [!WARNING]
 > **Disclaimer**: Use this application at your own risk. The authors and contributors are not responsible for any data loss, system configuration breakage, or other damages resulting from the use of this software. Always double-check what is being deleted before executing manual deletions (see [Safety & System Protection](#safety--system-protection) for details).
 
-**Ultra-fast parallel scanner and cleaner for development temp files.** Instantly finds and removes `.terraform`, `target`, `node_modules`, `__pycache__`, and other build artifacts across your entire drive. Optional ncdu-style TUI for interactive browsing.
+**Ultra-fast parallel disk analyzer and scanner** ncdu-style TUI for interactive browsing.
 
 ![Screenshot](pic.png)
 
@@ -22,10 +22,10 @@
 
 ## Optimizations
 
-- **Parallel Scanning**: Uses `jwalk` and `rayon` to utilize all CPU cores for directory traversal.
+- **Parallel Scanning**: Uses `rayon` to utilize all CPU cores for directory traversal.
 - **Performance Advantage**: Nearly **3x faster** than `gdu` on full disk scans due to platform-native directory traversal (such as batch `getattrlistbulk` on macOS).
 - **macOS Docker Fix**: Automatically detects and excludes `~/Library/Containers/com.docker.docker` to prevent inflated size reporting (Docker sparse image issue).
-- **Protected Directories**: Never scans or cleans critical toolchain directories in NON tui mode:
+- **Protected Directories**: Never cleans critical toolchain directories:
   - `~/.cargo`, `~/.rustup` (Rust)
   - `~/go`, `~/.go` (Go)
   - `~/.npm`, `~/.nvm` (Node.js)
