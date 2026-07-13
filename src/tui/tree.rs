@@ -83,11 +83,19 @@ pub struct DirTree {
 }
 
 impl DirTree {
+    #[cfg(test)]
     pub fn from_children(children: HashMap<PathBuf, Vec<DirEntry>>) -> Self {
         let children = children
             .into_iter()
             .map(|(path, entries)| (path, Arc::new(entries)))
             .collect();
+        Self {
+            children,
+            sort_modes: HashMap::new(),
+        }
+    }
+
+    fn from_shared_children(children: HashMap<PathBuf, Arc<Vec<DirEntry>>>) -> Self {
         Self {
             children,
             sort_modes: HashMap::new(),
@@ -250,40 +258,42 @@ impl DirTree {
                 let dir_is_protected = protected_paths
                     .iter()
                     .any(|protected| dir_path.starts_with(protected));
-                entries
-                    .into_iter()
-                    .filter(|entry| !entry.is_symlink)
-                    .map(|entry| {
-                        let entry_is_protected = dir_is_protected
-                            || (entry.is_dir
-                                && protected_paths.iter().any(|protected| {
-                                    dir_path.join(&entry.name).starts_with(protected)
-                                }));
-                        let is_temp = if entry_is_protected {
-                            false
-                        } else if entry.is_dir {
-                            matcher.is_temp_directory(&entry.name)
-                        } else {
-                            matcher.is_temp_file(&entry.name)
-                        };
-                        DirEntry {
-                            name: entry.name,
-                            size: entry.size,
-                            is_dir: entry.is_dir,
-                            is_temp,
-                        }
-                    })
-                    .collect()
+                Arc::new(
+                    entries
+                        .into_iter()
+                        .filter(|entry| !entry.is_symlink)
+                        .map(|entry| {
+                            let entry_is_protected = dir_is_protected
+                                || (entry.is_dir
+                                    && protected_paths.iter().any(|protected| {
+                                        dir_path.join(&entry.name).starts_with(protected)
+                                    }));
+                            let is_temp = if entry_is_protected {
+                                false
+                            } else if entry.is_dir {
+                                matcher.is_temp_directory(&entry.name)
+                            } else {
+                                matcher.is_temp_file(&entry.name)
+                            };
+                            DirEntry {
+                                name: entry.name,
+                                size: entry.size,
+                                is_dir: entry.is_dir,
+                                is_temp,
+                            }
+                        })
+                        .collect(),
+                )
             },
         );
         #[cfg(test)]
         let scan_elapsed = profile_started.elapsed();
         progress.errors.fetch_add(walk.errors, Ordering::Relaxed);
-        let mut children: HashMap<PathBuf, Vec<DirEntry>> = walk.entries;
+        let mut children: HashMap<PathBuf, Arc<Vec<DirEntry>>> = walk.entries;
 
         if cancelled.load(Ordering::Relaxed) {
             progress.done.store(true, Ordering::Release);
-            return Self::from_children(HashMap::new());
+            return Self::from_shared_children(HashMap::new());
         }
 
         progress.begin_stage(1, children.len());
@@ -293,7 +303,7 @@ impl DirTree {
 
         if cancelled.load(Ordering::Relaxed) {
             progress.done.store(true, Ordering::Release);
-            return Self::from_children(children);
+            return Self::from_shared_children(children);
         }
 
         // 3. Compute sizes in place. The old implementation duplicated every
@@ -306,7 +316,7 @@ impl DirTree {
 
         if cancelled.load(Ordering::Relaxed) {
             progress.done.store(true, Ordering::Release);
-            return Self::from_children(children);
+            return Self::from_shared_children(children);
         }
 
         // Add navigation in parallel. Entry sorting is deferred until a
@@ -319,7 +329,7 @@ impl DirTree {
             }
             // Add navigation
             if dir_path != &root_clone && dir_path.parent().is_some() {
-                entries.insert(
+                Arc::make_mut(entries).insert(
                     0,
                     DirEntry {
                         name: OsString::from(".."),
@@ -329,8 +339,10 @@ impl DirTree {
                     },
                 );
             }
-            progress.stage_current.fetch_add(1, Ordering::Relaxed);
         });
+        progress
+            .stage_current
+            .store(children.len(), Ordering::Relaxed);
 
         progress.done.store(true, Ordering::Release);
         #[cfg(test)]
@@ -343,19 +355,19 @@ impl DirTree {
                     .saturating_sub(sizing_elapsed)
             );
         }
-        Self::from_children(children)
+        Self::from_shared_children(children)
     }
 }
 
 fn apply_directory_sizes(
     dir: &Path,
-    children: &mut HashMap<PathBuf, Vec<DirEntry>>,
+    children: &mut HashMap<PathBuf, Arc<Vec<DirEntry>>>,
     progress: &ScanProgress,
     cancelled: &AtomicBool,
 ) -> u64 {
     struct Frame {
         path: PathBuf,
-        entries: Vec<DirEntry>,
+        entries: Arc<Vec<DirEntry>>,
         next: usize,
         total: u64,
     }
@@ -370,9 +382,11 @@ fn apply_directory_sizes(
         total: 0,
     }];
     let mut root_total = 0;
+    let mut completed = 0usize;
 
     while !stack.is_empty() {
         if cancelled.load(Ordering::Relaxed) {
+            progress.stage_current.store(completed, Ordering::Relaxed);
             for frame in stack.drain(..) {
                 children.insert(frame.path, frame.entries);
             }
@@ -404,7 +418,7 @@ fn apply_directory_sizes(
                     total: 0,
                 });
             } else if let Some(frame) = stack.last_mut() {
-                frame.entries[index].size = 0;
+                Arc::make_mut(&mut frame.entries)[index].size = 0;
             }
             continue;
         }
@@ -412,15 +426,20 @@ fn apply_directory_sizes(
         let frame = stack.pop().expect("completed size frame exists");
         let total = frame.total;
         children.insert(frame.path, frame.entries);
-        progress.stage_current.fetch_add(1, Ordering::Relaxed);
+        completed = completed.saturating_add(1);
+        if completed.is_multiple_of(1024) {
+            progress.stage_current.store(completed, Ordering::Relaxed);
+        }
         if let Some(parent) = stack.last_mut() {
             let child_index = parent.next - 1;
-            parent.entries[child_index].size = total;
+            Arc::make_mut(&mut parent.entries)[child_index].size = total;
             parent.total = parent.total.saturating_add(total);
         } else {
             root_total = total;
         }
     }
+
+    progress.stage_current.store(completed, Ordering::Relaxed);
 
     root_total
 }
@@ -625,6 +644,10 @@ mod tests {
                 false,
             )],
         );
+        let mut children: HashMap<PathBuf, Arc<Vec<DirEntry>>> = children
+            .into_iter()
+            .map(|(path, entries)| (path, Arc::new(entries)))
+            .collect();
         let progress = ScanProgress::new();
         progress.begin_stage(2, children.len());
         let total = apply_directory_sizes(&root, &mut children, &progress, &AtomicBool::new(false));
@@ -650,6 +673,10 @@ mod tests {
             );
         }
         children.insert(root.clone(), root_entries);
+        let mut children: HashMap<PathBuf, Arc<Vec<DirEntry>>> = children
+            .into_iter()
+            .map(|(path, entries)| (path, Arc::new(entries)))
+            .collect();
         let progress = ScanProgress::new();
         progress.begin_stage(2, children.len());
         assert_eq!(
@@ -840,6 +867,12 @@ mod tests {
         let Some(root) = std::env::var_os("CLEANER_PROFILE_ROOT").map(PathBuf::from) else {
             return;
         };
+        if let Some(threads) = std::env::var("CLEANER_PROFILE_THREADS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+        {
+            crate::pool::configure_scan_pool(threads);
+        }
         let matcher = PatternMatcher::new(Arc::new(Config::default()));
         let progress = Arc::new(ScanProgress::new());
         let start = Instant::now();

@@ -75,7 +75,7 @@ Phase 5 — atomics, locks, channels, and pools
 [x] Make requested thread count control CLI scan/delete work and the lazy TUI scan pool.
 [x] Aggregate all deletion statistics per Rayon batch, not once per ScanResult.
 [ ] Benchmark the bounded channel capacity on SSD, HDD, network, and very slow filesystems.
-[x] Benchmark macOS I/O concurrency separately: 4 performance cores beat 8 logical cores by about 2x.
+[x] Benchmark macOS `/` I/O concurrency: 6 workers beat 4 and 8; use performance plus half efficiency cores.
 [x] Prevent scanner and deleter pools from oversubscribing CPUs when both are active.
 [x] Use one shared configurable CLI/TUI clean pool; retain the global TUI tree pool for non-overlapping rebuilds.
 [x] Replace num_cpus with std::thread::available_parallelism.
@@ -85,7 +85,7 @@ Phase 6 — filesystem traversal and syscalls
 [x] Add a types-only CLI traversal path so Linux avoids statat for unmatched files.
 [x] Stat only matched CLI files when their size/age is actually needed.
 [x] Reuse a thread-local macOS bulk syscall buffer.
-[x] Benchmark macOS bulk buffers at 16/64/256/1024 KiB; select 64 KiB.
+[x] Benchmark macOS bulk buffers on fixtures and `/`; 64/256/1024 KiB tie within noise, select 64 KiB.
 [x] Avoid a second full traversal of every matched directory before live deletion.
 [x] Keep exact live file/byte reporting with a one-pass counted deleter.
 [x] Implement a counted iterative deleter that counts and removes in one traversal.
@@ -168,10 +168,10 @@ Profiling and acceptance matrix
 [x] Establish a repeatable scalable small, wide, deep, and multi-million-entry fixture generator.
 [x] Include mostly-files, mostly-directories, many-empty-directories, and large matched-directory fixtures.
 [ ] Measure wall time, CPU time, syscall count, allocations, peak RSS, lock contention, and channel stalls.
-[x] Measure macOS traversal/indexing, sizing, and finalization separately; retain rendering/navigation microprofiles.
+[x] Measure macOS `/` traversal/indexing, sizing, and finalization separately; retain rendering/navigation microprofiles.
 [x] Profile macOS release behavior without including compilation or fixture creation.
 [x] Run repeated coldish and warm-cache macOS measurements.
-[x] Compare macOS 1, 2, performance-core, and logical-core thread counts.
+[x] Compare macOS `/` at 1, 2, 4, 6, and 8 workers.
 [ ] Run native Linux, macOS, Windows, and FreeBSD measurements at the same commit.
 [x] Record the native macOS baseline, changes, rejected experiment, and post-change results in PERFORMANCE.md.
 [x] Reject the slower retained-descriptor/openat experiment and preserve correctness validation.

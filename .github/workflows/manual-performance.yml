@@ -57,7 +57,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p profile-results
-          for threads in 1 2 4 8; do
+          for threads in 1 2 4 6 8; do
             for pass in coldish warm; do
               { time -p target/release/cleaner target/profile-fixtures --json --threads "$threads"; } > "profile-results/${{ matrix.name }}-${threads}-${pass}.txt" 2>&1
             done
@@ -103,7 +103,7 @@ jobs:
             cargo build --release --locked
             target/create-fixtures target/profile-fixtures "${{ inputs.scale }}"
             mkdir -p profile-results
-            for threads in 1 2 4 8; do
+            for threads in 1 2 4 6 8; do
               for pass in coldish warm; do
                 { time -p target/release/cleaner target/profile-fixtures --json --threads "$threads"; } > "profile-results/FreeBSD-${threads}-${pass}.txt" 2>&1
               done

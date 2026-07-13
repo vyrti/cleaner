@@ -11,11 +11,15 @@ pub fn default_thread_count() -> usize {
         .unwrap_or(1);
     #[cfg(target_os = "macos")]
     {
-        // APFS directory traversal becomes slower when efficiency cores add
-        // syscall contention. Prefer Apple's performance-core count.
+        // Full-volume APFS profiles benefit from some efficiency cores, but
+        // all logical cores add contention. Use all performance cores plus
+        // half of the remaining cores.
         macos_performance_cores()
+            .map(|performance| {
+                performance.saturating_add(available.saturating_sub(performance) / 2)
+            })
             .unwrap_or(available)
-            .min(available)
+            .clamp(1, available)
     }
     #[cfg(not(target_os = "macos"))]
     available

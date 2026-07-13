@@ -17,8 +17,8 @@ pub enum MetadataMode {
     WithSizes,
 }
 
-pub struct WalkOutput<T> {
-    pub entries: HashMap<PathBuf, Vec<T>>,
+pub struct WalkOutput<V> {
+    pub entries: HashMap<PathBuf, V>,
     pub errors: usize,
 }
 
@@ -88,16 +88,16 @@ pub fn walk_parallel(
     .entries
 }
 
-pub fn walk_parallel_mapped<T, F>(
+pub fn walk_parallel_mapped<V, F>(
     root: PathBuf,
     pool: &ThreadPool,
     skip_check: Arc<dyn Fn(&Path) -> bool + Send + Sync>,
     progress_callback: Option<ProgressCallback>,
     mapper: &F,
-) -> WalkOutput<T>
+) -> WalkOutput<V>
 where
-    T: Send + 'static,
-    F: Fn(&Path, Vec<RawEntry>) -> Vec<T> + Sync,
+    V: Send + 'static,
+    F: Fn(&Path, Vec<RawEntry>) -> V + Sync,
 {
     let (results_tx, results_rx) = crossbeam_channel::bounded(1024);
     let errors = AtomicUsize::new(0);
@@ -128,17 +128,17 @@ where
     }
 }
 
-fn walk_recursive<'scope, T, F>(
+fn walk_recursive<'scope, V, F>(
     scope: &rayon::Scope<'scope>,
     dir: PathBuf,
-    results: &'scope Sender<(PathBuf, Vec<T>)>,
+    results: &'scope Sender<(PathBuf, V)>,
     skip_check: &'scope (dyn Fn(&Path) -> bool + Send + Sync),
     progress_callback: Option<&'scope (dyn Fn(usize, usize, u64) + Send + Sync)>,
     mapper: &'scope F,
     errors: &'scope AtomicUsize,
 ) where
-    T: Send + 'static,
-    F: Fn(&Path, Vec<RawEntry>) -> Vec<T> + Sync,
+    V: Send + 'static,
+    F: Fn(&Path, Vec<RawEntry>) -> V + Sync,
 {
     let entries = match read_dir_fast(&dir) {
         Ok(e) => e,
