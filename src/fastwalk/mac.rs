@@ -8,6 +8,7 @@ use std::ffi::CString;
 use std::os::raw::{c_int, c_void};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::Path;
+use std::sync::LazyLock;
 
 const ATTR_BIT_MAP_COUNT: u16 = 5;
 const ATTR_CMN_NAME: u32 = 0x00000001;
@@ -20,8 +21,17 @@ const VREG: u32 = 1;
 const VDIR: u32 = 2;
 const VLNK: u32 = 5;
 
+static BULK_BUFFER_SIZE: LazyLock<usize> = LazyLock::new(|| {
+    std::env::var("CLEANER_MACOS_BULK_BUFFER_KIB")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(64)
+        .clamp(16, 1024)
+        * 1024
+});
+
 thread_local! {
-    static BULK_BUFFER: RefCell<Vec<u8>> = RefCell::new(vec![0u8; 256 * 1024]);
+    static BULK_BUFFER: RefCell<Vec<u8>> = RefCell::new(vec![0u8; *BULK_BUFFER_SIZE]);
 }
 
 struct FileDescriptor(c_int);
@@ -68,10 +78,9 @@ extern "C" {
     ) -> c_int;
 }
 
-pub fn read_dir_bulk(path: &Path, _metadata_mode: MetadataMode) -> std::io::Result<Vec<RawEntry>> {
+pub fn read_dir_bulk(path: &Path, metadata_mode: MetadataMode) -> std::io::Result<Vec<RawEntry>> {
     let path_cstr = CString::new(path.as_os_str().as_bytes())
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
-
     let fd = unsafe {
         libc::open(
             path_cstr.as_ptr(),
@@ -82,14 +91,17 @@ pub fn read_dir_bulk(path: &Path, _metadata_mode: MetadataMode) -> std::io::Resu
         return Err(std::io::Error::last_os_error());
     }
     let fd = FileDescriptor(fd);
-
     let mut attr_list = libc::attrlist {
         bitmapcount: ATTR_BIT_MAP_COUNT,
         reserved: 0,
         commonattr: ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_NAME | ATTR_CMN_OBJTYPE,
         volattr: 0,
         dirattr: 0,
-        fileattr: ATTR_FILE_DATALENGTH,
+        fileattr: if metadata_mode == MetadataMode::WithSizes {
+            ATTR_FILE_DATALENGTH
+        } else {
+            0
+        },
         forkattr: 0,
     };
 

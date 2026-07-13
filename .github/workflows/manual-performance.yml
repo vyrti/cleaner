@@ -67,7 +67,7 @@ jobs:
 
       - name: Run release microbenchmarks
         shell: bash
-        run: cargo test --release --locked manual_profile -- --ignored --nocapture > "profile-results/${{ matrix.name }}-microbenchmarks.txt" 2>&1
+        run: CLEANER_PROFILE_ROOT=target/profile-fixtures cargo test --release --locked manual_profile -- --ignored --nocapture > "profile-results/${{ matrix.name }}-microbenchmarks.txt" 2>&1
 
       - name: Compare system allocator
         shell: bash
@@ -110,7 +110,7 @@ jobs:
             done
             rustc --version > profile-results/toolchain.txt
             cargo tree -e features > profile-results/dependency-features.txt
-            cargo test --release --locked manual_profile -- --ignored --nocapture > profile-results/FreeBSD-microbenchmarks.txt 2>&1
+            CLEANER_PROFILE_ROOT=target/profile-fixtures cargo test --release --locked manual_profile -- --ignored --nocapture > profile-results/FreeBSD-microbenchmarks.txt 2>&1
 
       - name: Upload profile
         uses: actions/upload-artifact@v4

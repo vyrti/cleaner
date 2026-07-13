@@ -75,7 +75,7 @@ Phase 5 — atomics, locks, channels, and pools
 [x] Make requested thread count control CLI scan/delete work and the lazy TUI scan pool.
 [x] Aggregate all deletion statistics per Rayon batch, not once per ScanResult.
 [ ] Benchmark the bounded channel capacity on SSD, HDD, network, and very slow filesystems.
-[ ] Benchmark I/O concurrency separately from CPU count; num_cpus may not be the best scan/delete width.
+[x] Benchmark macOS I/O concurrency separately: 4 performance cores beat 8 logical cores by about 2x.
 [x] Prevent scanner and deleter pools from oversubscribing CPUs when both are active.
 [x] Use one shared configurable CLI/TUI clean pool; retain the global TUI tree pool for non-overlapping rebuilds.
 [x] Replace num_cpus with std::thread::available_parallelism.
@@ -85,7 +85,7 @@ Phase 6 — filesystem traversal and syscalls
 [x] Add a types-only CLI traversal path so Linux avoids statat for unmatched files.
 [x] Stat only matched CLI files when their size/age is actually needed.
 [x] Reuse a thread-local macOS bulk syscall buffer.
-[ ] Benchmark macOS bulk-buffer sizes instead of assuming 256 KiB is optimal.
+[x] Benchmark macOS bulk buffers at 16/64/256/1024 KiB; select 64 KiB.
 [x] Avoid a second full traversal of every matched directory before live deletion.
 [x] Keep exact live file/byte reporting with a one-pass counted deleter.
 [x] Implement a counted iterative deleter that counts and removes in one traversal.
@@ -149,9 +149,10 @@ Phase 10 — hashing, dependencies, and build profile
 [x] Benchmark std HashMap hashing against foldhash with an ignored release microbenchmark.
 [x] Apply foldhash consistently to traversal results, DirTree, and tree caches.
 [x] Remove cleaner's unused direct memchr dependency (transitive users may still retain the crate).
-[ ] Benchmark mimalloc against each platform's system allocator on scan, tree build, navigation, and deletion.
-[ ] Keep or remove mimalloc based on per-platform measurements rather than allocation count alone.
-[ ] Audit dependency features and binary size after runtime performance work is stable.
+[x] Benchmark mimalloc against the macOS system allocator; warm runtime is tied within noise.
+[ ] Benchmark mimalloc against Linux, Windows, and FreeBSD system allocators in the manual matrix.
+[x] Use the system allocator and skip compiling mimalloc on macOS; retain it elsewhere pending native results.
+[x] Audit macOS dependency compilation and binary size; system allocation saves about 100 KiB.
 
 Phase 11 — configuration and correctness
 -------------------------------------------------------
@@ -164,16 +165,16 @@ Phase 11 — configuration and correctness
 
 Profiling and acceptance matrix
 -------------------------------
-[ ] Establish repeatable small, wide, deep, and multi-million-entry synthetic fixtures.
-[ ] Include mostly-files, mostly-directories, many-empty-directories, and large matched-directory fixtures.
+[x] Establish a repeatable scalable small, wide, deep, and multi-million-entry fixture generator.
+[x] Include mostly-files, mostly-directories, many-empty-directories, and large matched-directory fixtures.
 [ ] Measure wall time, CPU time, syscall count, allocations, peak RSS, lock contention, and channel stalls.
-[ ] Measure scanning, indexing, sizing, sorting, first render, navigation, preview, and deletion separately.
-[ ] Profile debug and release behavior without including compilation time.
-[ ] Run cold-cache and warm-cache measurements where the OS permits it.
-[ ] Compare 1, 2, physical-core, logical-core, and I/O-oversubscribed thread counts.
+[x] Measure macOS traversal/indexing, sizing, and finalization separately; retain rendering/navigation microprofiles.
+[x] Profile macOS release behavior without including compilation or fixture creation.
+[x] Run repeated coldish and warm-cache macOS measurements.
+[x] Compare macOS 1, 2, performance-core, and logical-core thread counts.
 [ ] Run native Linux, macOS, Windows, and FreeBSD measurements at the same commit.
-[ ] Record baseline and post-change results in the repository before marking architectural work complete.
-[ ] Reject optimizations that regress correctness, cancellation, memory safety, or common-case performance.
+[x] Record the native macOS baseline, changes, rejected experiment, and post-change results in PERFORMANCE.md.
+[x] Reject the slower retained-descriptor/openat experiment and preserve correctness validation.
 
 Validation required before checking an item
 -------------------------------------------

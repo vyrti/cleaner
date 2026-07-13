@@ -6,9 +6,35 @@ static CONFIGURED_SCAN_THREADS: AtomicUsize = AtomicUsize::new(0);
 pub const MAX_WORKER_THREADS: usize = 256;
 
 pub fn default_thread_count() -> usize {
-    std::thread::available_parallelism()
+    let available = std::thread::available_parallelism()
         .map(usize::from)
-        .unwrap_or(1)
+        .unwrap_or(1);
+    #[cfg(target_os = "macos")]
+    {
+        // APFS directory traversal becomes slower when efficiency cores add
+        // syscall contention. Prefer Apple's performance-core count.
+        macos_performance_cores()
+            .unwrap_or(available)
+            .min(available)
+    }
+    #[cfg(not(target_os = "macos"))]
+    available
+}
+
+#[cfg(target_os = "macos")]
+fn macos_performance_cores() -> Option<usize> {
+    let mut cores: libc::c_uint = 0;
+    let mut length = std::mem::size_of_val(&cores);
+    let result = unsafe {
+        libc::sysctlbyname(
+            c"hw.perflevel0.physicalcpu".as_ptr(),
+            (&mut cores as *mut libc::c_uint).cast(),
+            &mut length,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (result == 0 && cores > 0).then_some(cores as usize)
 }
 
 pub fn normalize_thread_count(num_threads: usize) -> usize {
@@ -51,5 +77,12 @@ mod tests {
     #[test]
     fn shared_pool_is_initialized_with_workers() {
         assert!(SCAN_POOL.current_num_threads() >= 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_default_uses_available_performance_cores() {
+        assert!(default_thread_count() >= 1);
+        assert!(default_thread_count() <= std::thread::available_parallelism().unwrap().get());
     }
 }

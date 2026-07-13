@@ -15,7 +15,11 @@ mod stats;
 mod test_support;
 mod tui;
 
-#[cfg(all(feature = "mimalloc-allocator", not(feature = "system-allocator")))]
+#[cfg(all(
+    feature = "mimalloc-allocator",
+    not(feature = "system-allocator"),
+    not(target_os = "macos")
+))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

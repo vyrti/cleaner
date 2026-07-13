@@ -102,6 +102,8 @@ impl DirTree {
         cancelled: Arc<AtomicBool>,
         force: bool,
     ) -> Self {
+        #[cfg(test)]
+        let profile_started = std::time::Instant::now();
         // Build the skip check closure
         #[cfg(target_os = "macos")]
         let docker_path: Option<PathBuf> = {
@@ -274,6 +276,8 @@ impl DirTree {
                     .collect()
             },
         );
+        #[cfg(test)]
+        let scan_elapsed = profile_started.elapsed();
         progress.errors.fetch_add(walk.errors, Ordering::Relaxed);
         let mut children: HashMap<PathBuf, Vec<DirEntry>> = walk.entries;
 
@@ -297,6 +301,8 @@ impl DirTree {
         // for multi-million-entry scans.
         progress.begin_stage(2, children.len());
         apply_directory_sizes(root, &mut children, &progress, &cancelled);
+        #[cfg(test)]
+        let sizing_elapsed = profile_started.elapsed().saturating_sub(scan_elapsed);
 
         if cancelled.load(Ordering::Relaxed) {
             progress.done.store(true, Ordering::Release);
@@ -327,6 +333,16 @@ impl DirTree {
         });
 
         progress.done.store(true, Ordering::Release);
+        #[cfg(test)]
+        if std::env::var_os("CLEANER_PROFILE_ROOT").is_some() {
+            println!(
+                "tui phases: scan/index={scan_elapsed:?} sizing={sizing_elapsed:?} finalizing={:?}",
+                profile_started
+                    .elapsed()
+                    .saturating_sub(scan_elapsed)
+                    .saturating_sub(sizing_elapsed)
+            );
+        }
         Self::from_children(children)
     }
 }
@@ -813,6 +829,35 @@ mod tests {
         let fold_lookup = start.elapsed();
         println!(
             "path hashing: std insert={std_insert:?} lookup={std_lookup:?}; foldhash insert={fold_insert:?} lookup={fold_lookup:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "manual release profile using CLEANER_PROFILE_ROOT"]
+    fn manual_profile_tui_tree_from_env() {
+        use std::time::Instant;
+
+        let Some(root) = std::env::var_os("CLEANER_PROFILE_ROOT").map(PathBuf::from) else {
+            return;
+        };
+        let matcher = PatternMatcher::new(Arc::new(Config::default()));
+        let progress = Arc::new(ScanProgress::new());
+        let start = Instant::now();
+        let tree = DirTree::build_with_progress(
+            &root,
+            &matcher,
+            Arc::clone(&progress),
+            Arc::new(AtomicBool::new(false)),
+            false,
+        );
+        println!(
+            "tui tree: elapsed={:?} directories={} files={} bytes={} errors={} retained_directories={}",
+            start.elapsed(),
+            progress.get_dirs(),
+            progress.get_files(),
+            progress.get_bytes(),
+            progress.get_errors(),
+            tree.children.len()
         );
     }
 }
