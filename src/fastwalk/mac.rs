@@ -8,6 +8,7 @@ use std::ffi::CString;
 use std::os::raw::{c_int, c_void};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::LazyLock;
 
 const ATTR_BIT_MAP_COUNT: u16 = 5;
@@ -34,9 +35,9 @@ thread_local! {
     static BULK_BUFFER: RefCell<Vec<u8>> = RefCell::new(vec![0u8; *BULK_BUFFER_SIZE]);
 }
 
-struct FileDescriptor(c_int);
+pub(super) struct Directory(c_int);
 
-impl Drop for FileDescriptor {
+impl Drop for Directory {
     fn drop(&mut self) {
         unsafe { libc::close(self.0) };
     }
@@ -78,7 +79,7 @@ extern "C" {
     ) -> c_int;
 }
 
-pub fn read_dir_bulk(path: &Path, metadata_mode: MetadataMode) -> std::io::Result<Vec<RawEntry>> {
+pub(super) fn open_directory(path: &Path) -> std::io::Result<Arc<Directory>> {
     let path_cstr = CString::new(path.as_os_str().as_bytes())
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
     let fd = unsafe {
@@ -90,7 +91,37 @@ pub fn read_dir_bulk(path: &Path, metadata_mode: MetadataMode) -> std::io::Resul
     if fd < 0 {
         return Err(std::io::Error::last_os_error());
     }
-    let fd = FileDescriptor(fd);
+    Ok(Arc::new(Directory(fd)))
+}
+
+pub(super) fn open_child_directory(
+    parent: &Directory,
+    name: &std::ffi::OsStr,
+) -> std::io::Result<Arc<Directory>> {
+    let name = CString::new(name.as_bytes())
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+    let fd = unsafe {
+        libc::openat(
+            parent.0,
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(Arc::new(Directory(fd)))
+}
+
+pub fn read_dir_bulk(path: &Path, metadata_mode: MetadataMode) -> std::io::Result<Vec<RawEntry>> {
+    let directory = open_directory(path)?;
+    read_open_directory(&directory, metadata_mode)
+}
+
+pub(super) fn read_open_directory(
+    directory: &Directory,
+    metadata_mode: MetadataMode,
+) -> std::io::Result<Vec<RawEntry>> {
     let mut attr_list = libc::attrlist {
         bitmapcount: ATTR_BIT_MAP_COUNT,
         reserved: 0,
@@ -112,7 +143,7 @@ pub fn read_dir_bulk(path: &Path, metadata_mode: MetadataMode) -> std::io::Resul
         loop {
             let result = unsafe {
                 getattrlistbulk(
-                    fd.0,
+                    directory.0,
                     &mut attr_list as *mut libc::attrlist,
                     buffer.as_mut_ptr() as *mut c_void,
                     buffer.len(),

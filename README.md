@@ -165,6 +165,25 @@ When running the interactive TUI on macOS, you may notice a difference between t
 2. **APFS Container Sharing**: Under Apple File System (APFS), all volumes in the same container pool (e.g., `System`, `Data`, `VM/Swap`, and `Recovery`) share the same physical storage pool. The `Disk Used` stat queries the shared container level, which includes system files and virtual memory swap space that are not part of your local scanned data.
 3. **System Integrity Protection (SIP) & Permissions**: macOS blocks applications from inspecting system-managed caches, VM swap space, and protected user folders (like `/private/var/folders/` or `/System/Library/`) even when running as `root` unless Full Disk Access is explicitly granted to the Terminal app. Scans will skip these directories, meaning they are excluded from the calculated `Folder` size but still counted under `Disk Used`.
 
+## macOS Root-Scan Performance
+
+Native release profiling against `/` on an Apple Silicon MacBook Air covered about 360,000
+directories and 1.14 million files. The initial four-worker scan took about 7.81 seconds. A worker
+sweep measured 26.9 seconds with one worker, 13.5 seconds with two, 7.67 seconds with four, 6.01
+seconds with six, and 6.19 seconds with eight. Cleaner therefore uses all macOS performance cores
+plus half of the remaining efficiency cores by default.
+
+The post-change root scan takes about 5.85 seconds: approximately 5.68 seconds for exact filesystem
+traversal/indexing, 146 ms for sizing, and 21 ms for finalization. Root-volume traversal uses parent
+directory descriptors and `openat` to reduce repeated full-path resolution; shallower scans retain
+the faster absolute-path implementation. Retained tree values are produced directly, avoiding a
+second 360,000-entry map conversion and peak-memory overlap.
+
+Native sampling shows that the remaining scan time is overwhelmingly inside macOS `open` and
+`getattrlistbulk`. Apple requires opening each traversed directory and calling `getattrlistbulk`
+until it returns zero; skipping either would make the report incomplete. Tests with 64, 256, and
+1024 KiB bulk buffers were equivalent within run-to-run noise, so Cleaner uses 64 KiB per worker.
+
 ## Third-Party Code
 
 This software integrates code adapted from [getattrlistbulk-rs](https://github.com/quivent/getattrlistbulk-rs), which is dual-licensed under the MIT and Apache 2.0 licenses.
@@ -175,4 +194,3 @@ Dual-licensed under either:
 
 * Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
 * MIT license ([LICENSE-MIT](LICENSE-MIT))
-

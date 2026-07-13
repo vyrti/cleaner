@@ -109,7 +109,36 @@ where
         results
     });
 
+    #[cfg(target_os = "macos")]
+    let mac_context = MacWalkContext {
+        results: &results_tx,
+        skip_check: skip_check.as_ref(),
+        progress_callback: progress_callback.as_deref(),
+        mapper,
+        errors: &errors,
+    };
+
     pool.scope(|scope| {
+        #[cfg(target_os = "macos")]
+        if root == Path::new("/") {
+            match mac::open_directory(&root) {
+                Ok(directory) => walk_recursive_macos(scope, root, directory, &mac_context),
+                Err(_) => {
+                    errors.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        } else {
+            walk_recursive(
+                scope,
+                root,
+                &results_tx,
+                skip_check.as_ref(),
+                progress_callback.as_deref(),
+                mapper,
+                &errors,
+            );
+        }
+        #[cfg(not(target_os = "macos"))]
         walk_recursive(
             scope,
             root,
@@ -189,6 +218,74 @@ fn walk_recursive<'scope, V, F>(
     }
 }
 
+#[cfg(target_os = "macos")]
+struct MacWalkContext<'scope, V, F> {
+    results: &'scope Sender<(PathBuf, V)>,
+    skip_check: &'scope (dyn Fn(&Path) -> bool + Send + Sync),
+    progress_callback: Option<&'scope (dyn Fn(usize, usize, u64) + Send + Sync)>,
+    mapper: &'scope F,
+    errors: &'scope AtomicUsize,
+}
+
+#[cfg(target_os = "macos")]
+fn walk_recursive_macos<'scope, V, F>(
+    scope: &rayon::Scope<'scope>,
+    dir: PathBuf,
+    directory: Arc<mac::Directory>,
+    context: &'scope MacWalkContext<'scope, V, F>,
+) where
+    V: Send + 'static,
+    F: Fn(&Path, Vec<RawEntry>) -> V + Sync,
+{
+    let entries = match mac::read_open_directory(&directory, MetadataMode::WithSizes) {
+        Ok(entries) => entries,
+        Err(_) => {
+            context.errors.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+    };
+
+    if let Some(callback) = context.progress_callback {
+        let (dirs, files, bytes) = entries.iter().filter(|entry| !entry.is_symlink).fold(
+            (0usize, 0usize, 0u64),
+            |(dirs, files, bytes), entry| {
+                if entry.is_dir {
+                    (dirs + 1, files, bytes)
+                } else {
+                    (dirs, files + 1, bytes.saturating_add(entry.size))
+                }
+            },
+        );
+        callback(dirs, files, bytes);
+    }
+
+    let subdirs: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.is_dir && !entry.is_symlink)
+        .filter_map(|entry| {
+            let path = dir.join(&entry.name);
+            (!(context.skip_check)(&path)).then(|| (path, entry.name.clone()))
+        })
+        .collect();
+
+    let mapped_entries = (context.mapper)(&dir, entries);
+    if context.results.send((dir, mapped_entries)).is_err() {
+        return;
+    }
+
+    for (subdir, name) in subdirs {
+        let parent = Arc::clone(&directory);
+        scope.spawn(
+            move |scope| match mac::open_child_directory(&parent, &name) {
+                Ok(child) => walk_recursive_macos(scope, subdir, child, context),
+                Err(_) => {
+                    context.errors.fetch_add(1, Ordering::Relaxed);
+                }
+            },
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,6 +329,22 @@ mod tests {
         let link = entries.iter().find(|e| e.name == "link").unwrap();
         assert!(link.is_symlink);
         assert_eq!(link.size, 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reads_child_directory_relative_to_parent_descriptor() {
+        let temp = TempDir::new("fastwalk-openat");
+        temp.write("child/data.bin", b"1234");
+        let parent = mac::open_directory(temp.path()).unwrap();
+        let child = mac::open_child_directory(&parent, std::ffi::OsStr::new("child")).unwrap();
+        let entries = mac::read_open_directory(&child, MetadataMode::WithSizes).unwrap();
+        let file = entries
+            .iter()
+            .find(|entry| entry.name == "data.bin")
+            .unwrap();
+        assert_eq!(file.size, 4);
+        assert!(!file.is_dir);
     }
 
     #[cfg(unix)]

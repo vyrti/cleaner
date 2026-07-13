@@ -173,7 +173,7 @@ Profiling and acceptance matrix
 [x] Run repeated coldish and warm-cache macOS measurements.
 [x] Compare macOS `/` at 1, 2, 4, 6, and 8 workers.
 [ ] Run native Linux, macOS, Windows, and FreeBSD measurements at the same commit.
-[x] Record the native macOS baseline, changes, rejected experiment, and post-change results in PERFORMANCE.md.
+[x] Record the native macOS `/` baseline, changes, and post-change results in README.md.
 [x] Reject the slower retained-descriptor/openat experiment and preserve correctness validation.
 
 Validation required before checking an item
