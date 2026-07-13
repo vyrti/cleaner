@@ -153,6 +153,12 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
         " ↑↓:nav  Enter:open  ←:back  c:clean  d:delete  s:sort  r:refresh  q:quit".to_string()
     };
 
+    let text = if let Some(index) = &app.index_status {
+        format!(" {index} │ {}", text.trim_start())
+    } else {
+        text
+    };
+
     let style = if app.confirm_delete || app.confirm_clean {
         Style::default().fg(Color::Yellow).bold()
     } else {

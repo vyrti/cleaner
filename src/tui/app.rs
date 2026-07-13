@@ -1,5 +1,7 @@
 //! TUI Application state with threaded deletion and live UI feedback
 
+#[cfg(target_os = "macos")]
+use super::index::{IndexEvent, IndexService, IndexState};
 use super::tree::{self, DirEntry, DirTree};
 use crate::deleter::Deleter;
 use crate::patterns::PatternMatcher;
@@ -60,6 +62,8 @@ pub struct App {
     pub disk_total: u64,
     pub disk_free: u64,
     pub force: bool,
+    pub index_status: Option<String>,
+    pub actions_enabled: bool,
     matcher: Arc<PatternMatcher>,
     tree: Option<DirTree>,
     /// Active deletion thread
@@ -68,6 +72,8 @@ pub struct App {
     clean_state: Option<CleanState>,
     rebuild_state: Option<RebuildState>,
     clean_preview: Option<(usize, usize, u64)>,
+    #[cfg(target_os = "macos")]
+    index_service: Option<IndexService>,
 }
 
 impl App {
@@ -88,12 +94,16 @@ impl App {
             disk_total: 0,
             disk_free: 0,
             force,
+            index_status: None,
+            actions_enabled: true,
             matcher,
             tree: None,
             delete_state: None,
             clean_state: None,
             rebuild_state: None,
             clean_preview: None,
+            #[cfg(target_os = "macos")]
+            index_service: None,
         }
     }
 
@@ -118,15 +128,47 @@ impl App {
             disk_total: 0,
             disk_free: 0,
             force,
+            index_status: None,
+            actions_enabled: true,
             matcher,
             tree: Some(tree),
             delete_state: None,
             clean_state: None,
             rebuild_state: None,
             clean_preview: None,
+            #[cfg(target_os = "macos")]
+            index_service: None,
         };
         app.load_current_dir();
         app
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn attach_index(&mut self, service: IndexService, state: IndexState) {
+        self.index_service = Some(service);
+        self.set_index_state(state);
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn tree_snapshot(&self) -> DirTree {
+        self.tree.as_ref().expect("TUI tree is initialized").clone()
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn mark_index_fallback(&mut self, error: String) {
+        self.actions_enabled = true;
+        self.index_status = Some("Index: degraded; exact tree".into());
+        self.set_status(format!("Index unavailable: {error}"));
+    }
+
+    #[cfg(target_os = "macos")]
+    fn set_index_state(&mut self, state: IndexState) {
+        self.actions_enabled = state.actions_enabled();
+        self.index_status = Some(format!("Index: {}", state.label()));
+        if !self.actions_enabled {
+            self.confirm_clean = false;
+            self.confirm_delete = false;
+        }
     }
 
     /// Check if currently deleting or cleaning
@@ -194,6 +236,10 @@ impl App {
     }
 
     fn start_rebuild(&mut self, completion_message: String) {
+        #[cfg(target_os = "macos")]
+        if self.index_service.is_some() {
+            self.set_index_state(IndexState::Rebuilding);
+        }
         let root = self.root.clone();
         let matcher = Arc::clone(&self.matcher);
         let force = self.force;
@@ -300,6 +346,10 @@ impl App {
         if self.is_busy() {
             return;
         }
+        if !self.actions_enabled {
+            self.set_status("Index is syncing; deletion is disabled".into());
+            return;
+        }
         if !self.entries.is_empty() {
             let entry = &self.entries[self.selected];
             if entry.name != ".." {
@@ -311,6 +361,10 @@ impl App {
 
     pub fn toggle_clean_confirm(&mut self) {
         if self.is_busy() {
+            return;
+        }
+        if !self.actions_enabled {
+            self.set_status("Index is syncing; cleaning is disabled".into());
             return;
         }
         self.confirm_clean = !self.confirm_clean;
@@ -329,6 +383,33 @@ impl App {
 
     /// Check for completed deletion/clean and clear expired status
     pub fn tick(&mut self) {
+        #[cfg(target_os = "macos")]
+        loop {
+            let event = self
+                .index_service
+                .as_ref()
+                .and_then(IndexService::try_event);
+            match event {
+                Some(IndexEvent::State(state)) => self.set_index_state(state),
+                Some(IndexEvent::Tree(tree)) => {
+                    let restore_path = self.current_path.clone();
+                    let restore_name = self.selected_entry().map(|entry| entry.name.clone());
+                    self.tree = Some(tree);
+                    if self
+                        .tree
+                        .as_ref()
+                        .is_none_or(|tree| !tree.children.contains_key(&restore_path))
+                    {
+                        self.current_path = self.root.clone();
+                        self.path_stack.clear();
+                    }
+                    self.load_current_dir_with_selection(restore_name.as_deref());
+                }
+                Some(IndexEvent::Error(error)) => self.set_status(format!("Index: {error}")),
+                None => break,
+            }
+        }
+
         // Check if deletion completed
         if let Some(state) = self.delete_state.take() {
             if state.handle.is_finished() {
@@ -346,6 +427,10 @@ impl App {
                         // INSTANT UPDATE: Remove from tree in-memory (O(log n))
                         if let Some(ref mut tree) = self.tree {
                             tree.delete_entry(&state.entry_path, state.is_dir);
+                        }
+                        #[cfg(target_os = "macos")]
+                        if let Some(service) = &self.index_service {
+                            service.record_deletion(state.entry_path.clone(), state.is_dir);
                         }
 
                         // Reload and try to keep cursor near deleted item
@@ -401,6 +486,10 @@ impl App {
                             self.path_stack.clear();
                         }
                         self.load_current_dir_with_selection(state.restore_name.as_deref());
+                        #[cfg(target_os = "macos")]
+                        if let (Some(service), Some(tree)) = (&self.index_service, &self.tree) {
+                            service.persist_refresh(tree.clone());
+                        }
                         self.set_status(state.completion_message);
                     }
                     Err(_) => self.set_status("Error: rebuild thread panicked".to_string()),
@@ -429,6 +518,11 @@ impl App {
         if self.is_busy() {
             return;
         }
+        if !self.actions_enabled {
+            self.set_status("Index is syncing; deletion is disabled".into());
+            self.confirm_delete = false;
+            return;
+        }
 
         if let Some(entry) = self.entries.get(self.selected) {
             if entry.name == ".." {
@@ -441,6 +535,23 @@ impl App {
             let is_dir = entry.is_dir;
             let path = self.current_path.join(&entry_name);
 
+            // The cached tree is never authority for deletion.  Revalidate the
+            // target without following symlinks immediately before acting.
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    self.set_status(format!("Delete rejected: {error}"));
+                    self.confirm_delete = false;
+                    return;
+                }
+            };
+            let actual = metadata.file_type();
+            if actual.is_symlink() || actual.is_dir() != is_dir || (!is_dir && !actual.is_file()) {
+                self.set_status("Delete rejected: path type changed since scan".into());
+                self.confirm_delete = false;
+                return;
+            }
+
             if !is_dir {
                 match fs::remove_file(&path) {
                     Ok(()) => {
@@ -451,6 +562,10 @@ impl App {
                         ));
                         if let Some(tree) = &mut self.tree {
                             tree.delete_entry(&path, false);
+                        }
+                        #[cfg(target_os = "macos")]
+                        if let Some(service) = &self.index_service {
+                            service.record_deletion(path.clone(), false);
                         }
                         self.load_current_dir_with_selection(Some(entry_name.as_os_str()));
                     }
@@ -477,6 +592,11 @@ impl App {
     /// Start async clean of current directory (uses main scanner)
     pub fn clean_current(&mut self) {
         if self.is_busy() {
+            return;
+        }
+        if !self.actions_enabled {
+            self.set_status("Index is syncing; cleaning is disabled".into());
+            self.confirm_clean = false;
             return;
         }
 
@@ -566,6 +686,10 @@ impl Drop for App {
         }
         if let Some(state) = self.delete_state.take() {
             let _ = state.handle.join();
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(mut service) = self.index_service.take() {
+            service.shutdown();
         }
     }
 }
@@ -779,6 +903,65 @@ mod tests {
             .as_deref()
             .unwrap()
             .starts_with("Deleted:"));
+    }
+
+    #[test]
+    fn manual_deletion_revalidates_missing_type_changes_and_symlinks() {
+        let temp = TempDir::new("app-delete-revalidate");
+        temp.mkdir("folder");
+        let file = temp.write("cache.pyc", b"123");
+        let mut app = app_with_tree(&temp);
+        select(&mut app, "cache.pyc");
+        fs::remove_file(&file).unwrap();
+        app.delete_selected();
+        assert!(app
+            .status_message
+            .as_deref()
+            .unwrap()
+            .starts_with("Delete rejected:"));
+
+        temp.mkdir("cache.pyc");
+        let mut app = app_with_tree(&temp);
+        select(&mut app, "cache.pyc");
+        app.delete_selected();
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Delete rejected: path type changed since scan")
+        );
+        assert!(temp.join("cache.pyc").is_dir());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let temp = TempDir::new("app-delete-symlink");
+            temp.mkdir("folder");
+            temp.write("target", b"keep");
+            symlink(temp.join("target"), temp.join("cache.pyc")).unwrap();
+            let mut app = app_with_tree(&temp);
+            select(&mut app, "cache.pyc");
+            app.delete_selected();
+            assert_eq!(
+                app.status_message.as_deref(),
+                Some("Delete rejected: path type changed since scan")
+            );
+            assert!(temp.join("target").exists());
+        }
+    }
+
+    #[test]
+    fn untrusted_index_state_disables_destructive_actions() {
+        let temp = TempDir::new("app-index-trust");
+        temp.mkdir("folder");
+        temp.write("cache.pyc", b"123");
+        let mut app = app_with_tree(&temp);
+        app.actions_enabled = false;
+        select(&mut app, "cache.pyc");
+        app.toggle_delete_confirm();
+        assert!(!app.confirm_delete);
+        app.delete_selected();
+        assert!(temp.join("cache.pyc").exists());
+        app.toggle_clean_confirm();
+        assert!(!app.confirm_clean);
     }
 
     #[test]

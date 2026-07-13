@@ -17,6 +17,7 @@
 - **Smart Deletion** - Finds and removes common dev artifacts: `node_modules`, `.terraform`, `target`, `__pycache__`, etc.
 - **Configurable** - TOML config + environment variables
 - **Safe** - Dry-run mode and time-based filtering (`--days`)
+- **Persistent macOS Index** - Optional instant warm-start TUI browsing with safe FSEvents catch-up between launches
 - **Cross-platform** - Windows, Linux, macOS, FreeBSD | ARM64 and x64
 
 ## Optimizations
@@ -64,6 +65,12 @@ cleaner
 # Launch interactive TUI mode starting in a specific folder
 cleaner ~/Projects
 
+# macOS only: persist the TUI tree for fast subsequent launches
+cleaner ~/Projects --index
+
+# macOS only: discard the cached generation and perform a new exact scan
+cleaner ~/Projects --rebuild-index
+
 # Run non-interactive CLI scripting mode and delete matching files (requires --confirm)
 cleaner ~/Projects --confirm
 
@@ -90,6 +97,38 @@ cleaner ~/Projects --confirm --days 7
 | `--days` | Only delete items older than N days |
 | `--json` | Output results in JSON format (forces CLI mode) |
 | `--force` | Disable system directory protections (allow automated cleaning inside protected paths) |
+| `--index` | macOS TUI only: enable the persistent filesystem index |
+| `--rebuild-index` | macOS TUI only: force an exact scan and replace the index; implies `--index` |
+
+## Persistent macOS TUI Index
+
+Persistent indexing is opt-in and is available only in the interactive macOS TUI. It does not install a daemon or background service.
+
+```bash
+# First run: exact scan, followed by asynchronous index persistence
+cleaner ~/Projects --index
+
+# Later runs: show the cached tree immediately, then synchronize it
+cleaner ~/Projects --index
+
+# Force a fresh exact scan if desired
+cleaner ~/Projects --rebuild-index
+```
+
+The first indexed run uses the same exact filesystem scanner as normal TUI mode. Once the tree is available, Cleaner writes a crash-safe redb generation in the background. Subsequent runs load that tree immediately and replay macOS FSEvents history recorded between launches. Event paths are only hints: Cleaner re-reads affected directories before updating the index.
+
+While a cached tree is catching up, the footer shows `Index: syncing; browsing only`. Navigation and sorting remain available, but cleaning and manual deletion are disabled. They are enabled only after reconciliation completes and the footer changes to `Index: ready`.
+
+Safety and recovery behavior:
+
+- TUI Clean always uses the fresh scanner/deleter pipeline; cached entries are never deletion candidates.
+- Manual deletion re-reads metadata without following symlinks and rejects missing paths, symlinks, or paths whose type changed after scanning.
+- Pressing `r` still performs an exact refresh and writes a new index generation.
+- Dropped or unusable FSEvents history, volume changes, incompatible data, corruption, and index-writer contention fall back to an exact scan.
+- Configuration changes reclassify cached names without requiring another filesystem traversal.
+- The cache is stored at `~/Library/Caches/cleaner/index-v1.redb` and keeps independent generations for different canonical scan roots.
+
+`--index` and `--rebuild-index` cannot be combined with CLI modes such as `--json` or `--confirm`. On Linux, Windows, and FreeBSD these flags are rejected; normal CLI and TUI behavior is unchanged.
 
 ## Safety & System Protection
 

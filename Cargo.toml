@@ -51,6 +51,12 @@ libc = "0.2"
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 mimalloc = { version = "0.1", default-features = false, optional = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+redb = "4.1.0"
+objc2-core-foundation = { version = "0.3.2", features = ["std", "CFString", "CFArray", "CFRunLoop"] }
+objc2-core-services = { version = "0.3.2", features = ["std", "libc", "FSEvents"] }
+dispatch2 = "0.3.1"
+
 # Linux and FreeBSD file descriptor APIs
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 rustix = { version = "0.38", features = ["fs"] }

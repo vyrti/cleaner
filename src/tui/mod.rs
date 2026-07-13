@@ -2,6 +2,8 @@
 
 mod app;
 mod events;
+#[cfg(target_os = "macos")]
+mod index;
 mod tree;
 mod ui;
 
@@ -32,7 +34,14 @@ fn cleanup_terminal() {
 }
 
 /// Run the interactive TUI
-pub fn run(root: PathBuf, config: Arc<Config>) -> io::Result<()> {
+pub fn run(
+    root: PathBuf,
+    config: Arc<Config>,
+    index_enabled: bool,
+    rebuild_index: bool,
+) -> io::Result<()> {
+    #[cfg(not(target_os = "macos"))]
+    let _ = (index_enabled, rebuild_index);
     // Set panic hook to cleanup terminal
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -50,6 +59,34 @@ pub fn run(root: PathBuf, config: Arc<Config>) -> io::Result<()> {
     // Create matcher
     let matcher = Arc::new(PatternMatcher::new(Arc::clone(&config)));
 
+    #[cfg(target_os = "macos")]
+    let mut index_fallback = None;
+    #[cfg(target_os = "macos")]
+    let (mut index_service, mut cached_tree, cached_event_id, starting_event_id) = if index_enabled
+    {
+        match index::IndexService::open(&root, Arc::clone(&config), rebuild_index) {
+            Ok((
+                service,
+                index::IndexStartup::Cached {
+                    tree,
+                    last_event_id,
+                },
+            )) => (Some(service), Some(tree), Some(last_event_id), 0),
+            Ok((service, index::IndexStartup::Exact { reason: _reason })) => {
+                let event_id = index::IndexService::current_event_id();
+                (Some(service), None, None, event_id)
+            }
+            Err(error) => {
+                index_fallback = Some(error.to_string());
+                (None, None, None, 0)
+            }
+        }
+    } else {
+        (None, None, None, 0)
+    };
+    #[cfg(not(target_os = "macos"))]
+    let mut cached_tree: Option<tree::DirTree> = None;
+
     // Create progress tracker with cancel flag
     let progress = Arc::new(ScanProgress::new());
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -60,19 +97,21 @@ pub fn run(root: PathBuf, config: Arc<Config>) -> io::Result<()> {
     let root_clone = root.clone();
     let matcher_clone = Arc::clone(&matcher);
     let config_clone = Arc::clone(&config);
-    let scan_handle = thread::spawn(move || {
-        tree::DirTree::build_with_progress(
-            &root_clone,
-            &matcher_clone,
-            progress_clone,
-            cancelled_clone,
-            config_clone.force,
-        )
+    let scan_handle = cached_tree.is_none().then(|| {
+        thread::spawn(move || {
+            tree::DirTree::build_with_progress(
+                &root_clone,
+                &matcher_clone,
+                progress_clone,
+                cancelled_clone,
+                config_clone.force,
+            )
+        })
     });
 
     // Show live progress while scanning with quit support
     let mut user_quit = false;
-    while !progress.is_done() && !user_quit {
+    while scan_handle.is_some() && !progress.is_done() && !user_quit {
         terminal.draw(|f| {
             let area = f.area();
             let files = progress.get_files();
@@ -136,24 +175,44 @@ pub fn run(root: PathBuf, config: Arc<Config>) -> io::Result<()> {
     if user_quit {
         // Cancellation is cooperative. Join before returning so the scan cannot
         // outlive terminal teardown as a detached background worker.
-        let _ = scan_handle.join();
+        if let Some(scan_handle) = scan_handle {
+            let _ = scan_handle.join();
+        }
         cleanup_terminal();
         println!("Scan cancelled.");
         return Ok(());
     }
 
     // Get the completed tree
-    let dir_tree = match scan_handle.join() {
-        Ok(tree) => tree,
-        Err(_) => {
-            cleanup_terminal();
-            eprintln!("Scan thread panicked");
-            return Ok(());
+    let dir_tree = if let Some(tree) = cached_tree.take() {
+        tree
+    } else {
+        match scan_handle.expect("exact scan handle").join() {
+            Ok(tree) => tree,
+            Err(_) => {
+                cleanup_terminal();
+                eprintln!("Scan thread panicked");
+                return Ok(());
+            }
         }
     };
 
     // Create app with pre-built tree
     let mut app = App::new_with_tree(root, matcher, dir_tree, config.force);
+    #[cfg(target_os = "macos")]
+    if let Some(error) = index_fallback {
+        app.mark_index_fallback(error);
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(service) = index_service.take() {
+        if let Some(last_event_id) = cached_event_id {
+            service.start_catchup(app.tree_snapshot(), last_event_id);
+            app.attach_index(service, index::IndexState::CatchingUp);
+        } else {
+            service.persist_exact(app.tree_snapshot(), starting_event_id);
+            app.attach_index(service, index::IndexState::Persisting);
+        }
+    }
 
     // Main loop
     let result = run_app(&mut terminal, &mut app);

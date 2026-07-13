@@ -77,6 +77,7 @@ impl ScanProgress {
     }
 }
 
+#[derive(Clone)]
 pub struct DirTree {
     pub children: HashMap<PathBuf, Arc<Vec<DirEntry>>>,
     sort_modes: HashMap<PathBuf, bool>,
@@ -95,11 +96,16 @@ impl DirTree {
         }
     }
 
-    fn from_shared_children(children: HashMap<PathBuf, Arc<Vec<DirEntry>>>) -> Self {
+    pub(crate) fn from_shared_children(children: HashMap<PathBuf, Arc<Vec<DirEntry>>>) -> Self {
         Self {
             children,
             sort_modes: HashMap::new(),
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn shared_children(&self) -> &HashMap<PathBuf, Arc<Vec<DirEntry>>> {
+        &self.children
     }
 
     /// Build tree with SINGLE WalkDir pass - maximum performance
@@ -130,6 +136,7 @@ impl DirTree {
         #[cfg(not(target_os = "macos"))]
         let docker_path: Option<PathBuf> = None;
 
+        #[cfg(target_os = "macos")]
         let root_clone = root.to_path_buf();
 
         // Protected directories (NEVER auto-clean inside these, but allow scanning and manual TUI deletion)
@@ -445,6 +452,74 @@ fn apply_directory_sizes(
 }
 
 impl DirTree {
+    /// Re-evaluate pattern state without touching the filesystem.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn reclassify(&mut self, matcher: &PatternMatcher, root: &Path, force: bool) {
+        for (directory, entries) in &mut self.children {
+            for entry in Arc::make_mut(entries).iter_mut() {
+                if entry.name == ".." {
+                    entry.is_temp = false;
+                    continue;
+                }
+                let path = directory.join(&entry.name);
+                entry.is_temp = if !force && is_protected_for_root(root, &path) {
+                    false
+                } else if entry.is_dir {
+                    matcher.is_temp_directory(&entry.name)
+                } else {
+                    matcher.is_temp_file(&entry.name)
+                };
+            }
+        }
+    }
+
+    /// Reconcile FSEvents hints by exact-scanning only the affected subtrees.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn reconcile(
+        &mut self,
+        dirty: &[PathBuf],
+        matcher: &PatternMatcher,
+        root: &Path,
+        force: bool,
+    ) {
+        for path in dirty {
+            if !path.starts_with(root) {
+                continue;
+            }
+            let progress = Arc::new(ScanProgress::new());
+            let subtree = Self::build_with_progress(
+                path,
+                matcher,
+                Arc::clone(&progress),
+                Arc::new(AtomicBool::new(false)),
+                force,
+            );
+            self.children
+                .retain(|candidate, _| !candidate.starts_with(path));
+            for (candidate, mut entries) in subtree.children {
+                if candidate == *path && candidate != root && candidate.parent().is_some() {
+                    let entries = Arc::make_mut(&mut entries);
+                    if entries.first().is_none_or(|entry| entry.name != "..") {
+                        entries.insert(
+                            0,
+                            DirEntry {
+                                name: OsString::from(".."),
+                                size: 0,
+                                is_dir: true,
+                                is_temp: false,
+                            },
+                        );
+                    }
+                }
+                self.children.insert(candidate, entries);
+            }
+        }
+        self.sort_modes.clear();
+        let progress = ScanProgress::new();
+        progress.begin_stage(2, self.children.len());
+        apply_directory_sizes(root, &mut self.children, &progress, &AtomicBool::new(false));
+    }
+
     pub fn get_children(&mut self, path: &Path, by_name: bool) -> Arc<Vec<DirEntry>> {
         if self.sort_modes.get(path).copied() != Some(by_name) {
             if let Some(entries) = self.children.get_mut(path) {
@@ -528,6 +603,51 @@ impl DirTree {
         }
         totals
     }
+}
+
+#[cfg(target_os = "macos")]
+fn is_protected_for_root(root: &Path, path: &Path) -> bool {
+    let mut protected = vec![
+        PathBuf::from("/System"),
+        PathBuf::from("/Library"),
+        PathBuf::from("/Applications"),
+        PathBuf::from("/usr"),
+        PathBuf::from("/var"),
+        PathBuf::from("/etc"),
+        PathBuf::from("/bin"),
+        PathBuf::from("/sbin"),
+        PathBuf::from("/lib"),
+        PathBuf::from("/lib64"),
+        PathBuf::from("/boot"),
+        PathBuf::from("/opt"),
+        PathBuf::from("/private"),
+        PathBuf::from("/dev"),
+        PathBuf::from("/proc"),
+        PathBuf::from("/sys"),
+        PathBuf::from("/run"),
+    ];
+    if let Some(home) = dirs::home_dir() {
+        protected.extend([
+            home.join(".cargo"),
+            home.join(".rustup"),
+            home.join("go"),
+            home.join(".go"),
+            home.join(".npm"),
+            home.join(".nvm"),
+            home.join(".pyenv"),
+            home.join(".rbenv"),
+            home.join(".gradle"),
+            home.join(".m2"),
+            home.join(".local"),
+            home.join(".config"),
+            home.join(".ssh"),
+            home.join(".gnupg"),
+            home.join("Library"),
+        ]);
+    }
+    protected
+        .iter()
+        .any(|protected| !root.starts_with(protected) && path.starts_with(protected))
 }
 
 pub fn sort_by_size(entries: &mut [DirEntry]) {

@@ -86,6 +86,14 @@ struct Args {
     /// Force deletion inside protected system directories
     #[arg(long = "force", default_value = "false")]
     force: bool,
+
+    /// Use the persistent macOS TUI filesystem index
+    #[arg(long = "index", default_value = "false")]
+    index: bool,
+
+    /// Rebuild the persistent macOS TUI filesystem index
+    #[arg(long = "rebuild-index", default_value = "false")]
+    rebuild_index: bool,
 }
 
 fn resolve_folder(args: &Args) -> PathBuf {
@@ -106,6 +114,23 @@ fn main() {
     let args = Args::parse();
 
     let is_interactive = !args.json && !args.confirm;
+    let index_requested = args.index || args.rebuild_index;
+
+    if index_requested && !is_interactive {
+        eprintln!(
+            "{} --index is only valid in interactive TUI mode",
+            "Error:".red().bold()
+        );
+        std::process::exit(2);
+    }
+    #[cfg(not(target_os = "macos"))]
+    if index_requested {
+        eprintln!(
+            "{} --index is only available on macOS",
+            "Error:".red().bold()
+        );
+        std::process::exit(2);
+    }
 
     // Resolve folder: positional > --folder > home directory
     let folder = resolve_folder(&args);
@@ -176,7 +201,7 @@ fn main() {
 
     // Interactive TUI mode by default when run without folder/path arguments
     if is_interactive {
-        if let Err(e) = tui::run(folder, config) {
+        if let Err(e) = tui::run(folder, config, index_requested, args.rebuild_index) {
             eprintln!("{} TUI error: {}", "Error:".red().bold(), e);
             std::process::exit(1);
         }
