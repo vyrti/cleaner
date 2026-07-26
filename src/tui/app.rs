@@ -224,7 +224,7 @@ impl App {
             if let Some(idx) = self.entries.iter().position(|e| e.name == name) {
                 self.selected = idx;
             } else {
-                self.selected = 0;
+                self.selected = self.selected.min(self.entries.len().saturating_sub(1));
             }
         } else {
             self.selected = 0;
@@ -402,6 +402,7 @@ impl App {
                     {
                         self.current_path = self.root.clone();
                         self.path_stack.clear();
+                        self.selected = 0;
                     }
                     self.load_current_dir_with_selection(restore_name.as_deref());
                 }
@@ -484,6 +485,7 @@ impl App {
                         } else {
                             self.current_path = self.root.clone();
                             self.path_stack.clear();
+                            self.selected = 0;
                         }
                         self.load_current_dir_with_selection(state.restore_name.as_deref());
                         #[cfg(target_os = "macos")]
@@ -903,6 +905,41 @@ mod tests {
             .as_deref()
             .unwrap()
             .starts_with("Deleted:"));
+    }
+
+    #[test]
+    fn deleting_selected_file_preserves_cursor_position() {
+        let temp = TempDir::new("app-delete-cursor");
+        let _file1 = temp.write("a.txt", b"111");
+        let file2 = temp.write("b.txt", b"11");
+        let _file3 = temp.write("c.txt", b"1");
+        let root = temp.path().to_path_buf();
+        let mut children = HashMap::new();
+        children.insert(
+            root.clone(),
+            vec![
+                entry(temp.join("a.txt"), "a.txt", 3, false, false),
+                entry(temp.join("b.txt"), "b.txt", 2, false, false),
+                entry(temp.join("c.txt"), "c.txt", 1, false, false),
+            ],
+        );
+        let mut app = App::new_with_tree(root, matcher(), DirTree::from_children(children), false);
+
+        // Since we sort by size descending:
+        // Index 0: a.txt (size 3)
+        // Index 1: b.txt (size 2)
+        // Index 2: c.txt (size 1)
+
+        select(&mut app, "b.txt");
+        assert_eq!(app.selected, 1);
+
+        app.delete_selected();
+
+        // b.txt is deleted
+        assert!(!file2.exists());
+        // Cursor index should stay at 1, which is now c.txt (size 1)
+        assert_eq!(app.selected, 1);
+        assert_eq!(app.entries[app.selected].name, "c.txt");
     }
 
     #[test]

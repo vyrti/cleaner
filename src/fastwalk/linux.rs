@@ -49,7 +49,11 @@ pub fn read_dir_fstatat(
         let is_symlink = file_type == rustix::fs::FileType::Symlink;
         let size = stat
             .filter(|_| !is_dir && !is_symlink && metadata_mode == MetadataMode::WithSizes)
-            .map_or(0, |stat| stat.st_size as u64);
+            .map_or(0, |stat| {
+                let logical_size = stat.st_size as u64;
+                let physical_size = stat.st_blocks as u64 * 512;
+                std::cmp::min(logical_size, physical_size)
+            });
 
         let name = std::ffi::OsString::from_vec(name_bytes.to_vec());
         result.push(RawEntry {

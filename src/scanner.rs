@@ -26,13 +26,30 @@ fn passes_age_filter(path: &Path, days: Option<u64>) -> bool {
 fn matched_file_size(path: &Path, days: Option<u64>) -> Option<u64> {
     let metadata = std::fs::metadata(path);
     let Some(days) = days else {
-        return Some(metadata.map(|value| value.len()).unwrap_or(0));
+        return Some(metadata.map(|value| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                std::cmp::min(value.len(), value.blocks() * 512)
+            }
+            #[cfg(not(unix))]
+            value.len()
+        }).unwrap_or(0));
     };
 
     let metadata = metadata.ok()?;
     let modified = metadata.modified().ok()?;
     let elapsed = modified.elapsed().ok()?;
-    (elapsed.as_secs() > days.saturating_mul(24 * 60 * 60)).then_some(metadata.len())
+    let size = {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            std::cmp::min(metadata.len(), metadata.blocks() * 512)
+        }
+        #[cfg(not(unix))]
+        metadata.len()
+    };
+    (elapsed.as_secs() > days.saturating_mul(24 * 60 * 60)).then_some(size)
 }
 
 /// Result of scanning - a path to delete and whether it's a directory

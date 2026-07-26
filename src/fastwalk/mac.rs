@@ -15,6 +15,7 @@ const ATTR_BIT_MAP_COUNT: u16 = 5;
 const ATTR_CMN_NAME: u32 = 0x00000001;
 const ATTR_CMN_OBJTYPE: u32 = 0x00000008;
 const ATTR_CMN_RETURNED_ATTRS: u32 = 0x80000000;
+const ATTR_FILE_ALLOCSIZE: u32 = 0x00000004;
 const ATTR_FILE_DATALENGTH: u32 = 0x00000200;
 
 #[allow(dead_code)]
@@ -129,7 +130,7 @@ pub(super) fn read_open_directory(
         volattr: 0,
         dirattr: 0,
         fileattr: if metadata_mode == MetadataMode::WithSizes {
-            ATTR_FILE_DATALENGTH
+            ATTR_FILE_ALLOCSIZE | ATTR_FILE_DATALENGTH
         } else {
             0
         },
@@ -204,16 +205,41 @@ pub(super) fn read_open_directory(
                     let is_symlink = header.obj_type == VLNK;
                     let size = if !is_dir
                         && !is_symlink
-                        && (header.returned.fileattr & ATTR_FILE_DATALENGTH) != 0
+                        && metadata_mode == MetadataMode::WithSizes
                     {
-                        let data_offset = std::mem::size_of::<EntryPrefix>();
-                        if record_len < data_offset + std::mem::size_of::<u64>() {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                "truncated getattrlistbulk file length",
-                            ));
+                        let mut offset = std::mem::size_of::<EntryPrefix>();
+                        let mut alloc_size = None;
+                        let mut data_length = None;
+
+                        if (header.returned.fileattr & ATTR_FILE_ALLOCSIZE) != 0 {
+                            if record_len < offset + std::mem::size_of::<u64>() {
+                                return Err(std::io::Error::new(
+                                    std::io::ErrorKind::InvalidData,
+                                    "truncated getattrlistbulk file alloc size",
+                                ));
+                            }
+                            let val = unsafe { std::ptr::read_unaligned(ptr.add(offset).cast::<u64>()) };
+                            alloc_size = Some(val);
+                            offset += std::mem::size_of::<u64>();
                         }
-                        unsafe { std::ptr::read_unaligned(ptr.add(data_offset).cast::<u64>()) }
+
+                        if (header.returned.fileattr & ATTR_FILE_DATALENGTH) != 0 {
+                            if record_len < offset + std::mem::size_of::<u64>() {
+                                return Err(std::io::Error::new(
+                                    std::io::ErrorKind::InvalidData,
+                                    "truncated getattrlistbulk file data length",
+                                ));
+                            }
+                            let val = unsafe { std::ptr::read_unaligned(ptr.add(offset).cast::<u64>()) };
+                            data_length = Some(val);
+                        }
+
+                        match (alloc_size, data_length) {
+                            (Some(alloc), Some(len)) => std::cmp::min(alloc, len),
+                            (Some(alloc), None) => alloc,
+                            (None, Some(len)) => len,
+                            (None, None) => 0,
+                        }
                     } else {
                         0
                     };

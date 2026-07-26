@@ -1,6 +1,6 @@
 [package]
 name = "cleaner"
-version = "0.0.7"
+version = "0.0.8"
 edition = "2021"
 description = "Fastest disk scanner and cleaner"
 license = "MIT OR Apache-2.0"
@@ -59,7 +59,7 @@ dispatch2 = "0.3.1"
 
 # Linux and FreeBSD file descriptor APIs
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
-rustix = { version = "0.38", features = ["fs"] }
+rustix = { version = "1.1", features = ["fs"] }
 
 
 [profile.release]

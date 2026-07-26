@@ -60,7 +60,14 @@ fn read_dir(path: &Path, metadata_mode: MetadataMode) -> std::io::Result<Vec<Raw
             let entry = entry?;
             let file_type = entry.file_type()?;
             let size = if file_type.is_file() && metadata_mode == MetadataMode::WithSizes {
-                entry.metadata()?.len()
+                let metadata = entry.metadata()?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    std::cmp::min(metadata.len(), metadata.blocks() * 512)
+                }
+                #[cfg(not(unix))]
+                metadata.len()
             } else {
                 0
             };
@@ -316,6 +323,20 @@ mod tests {
                 .size,
             0
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reads_sparse_file_size() {
+        let temp = TempDir::new("fastwalk-sparse");
+        let path = temp.join("sparse.bin");
+        let f = std::fs::File::create(&path).unwrap();
+        f.set_len(10 * 1024 * 1024).unwrap(); // 10 MiB
+        drop(f);
+
+        let entries = read_dir_fast(temp.path()).unwrap();
+        let file = entries.iter().find(|e| e.name == "sparse.bin").unwrap();
+        assert!(file.size < 10 * 1024 * 1024);
     }
 
     #[cfg(unix)]
