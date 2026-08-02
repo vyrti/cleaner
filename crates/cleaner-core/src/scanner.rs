@@ -4,6 +4,7 @@
 use crate::config::Config;
 use crate::fastwalk;
 use crate::patterns::PatternMatcher;
+use crate::protected::protected_paths_for_root;
 #[cfg(test)]
 use crate::pool::build_worker_pool;
 use crossbeam_channel::Sender;
@@ -124,88 +125,7 @@ impl Scanner {
         let docker_path: Option<PathBuf> = None;
 
         // Protected directories (NEVER auto-clean inside these, but allow scanning)
-        let mut protected_paths: Vec<PathBuf> = vec![];
-
-        // Home-relative paths
-        if let Some(home) = dirs::home_dir() {
-            protected_paths.extend(vec![
-                home.join(".cargo"),
-                home.join(".rustup"),
-                home.join("go"),
-                home.join(".go"),
-                home.join(".npm"),
-                home.join(".nvm"),
-                home.join(".pyenv"),
-                home.join(".rbenv"),
-                home.join(".gradle"),
-                home.join(".m2"),
-                home.join(".local"),
-                home.join(".config"),
-                home.join(".ssh"),
-                home.join(".gnupg"),
-                home.join("Library"),
-            ]);
-            #[cfg(windows)]
-            {
-                protected_paths.push(home.join("AppData"));
-            }
-        }
-
-        // Unix system directories
-        #[cfg(unix)]
-        {
-            protected_paths.extend(vec![
-                PathBuf::from("/System"),
-                PathBuf::from("/Library"),
-                PathBuf::from("/Applications"),
-                PathBuf::from("/usr"),
-                PathBuf::from("/var"),
-                PathBuf::from("/etc"),
-                PathBuf::from("/bin"),
-                PathBuf::from("/sbin"),
-                PathBuf::from("/lib"),
-                PathBuf::from("/lib64"),
-                PathBuf::from("/boot"),
-                PathBuf::from("/opt"),
-                PathBuf::from("/private"),
-                PathBuf::from("/dev"),
-                PathBuf::from("/proc"),
-                PathBuf::from("/sys"),
-                PathBuf::from("/run"),
-            ]);
-        }
-
-        // Windows system directories
-        #[cfg(windows)]
-        {
-            if let Some(win_dir) = std::env::var_os("SystemRoot").map(PathBuf::from) {
-                protected_paths.push(win_dir);
-            } else {
-                protected_paths.push(PathBuf::from("C:\\Windows"));
-            }
-            if let Some(prog_files) = std::env::var_os("ProgramFiles").map(PathBuf::from) {
-                protected_paths.push(prog_files);
-            } else {
-                protected_paths.push(PathBuf::from("C:\\Program Files"));
-            }
-            if let Some(prog_files_x86) = std::env::var_os("ProgramFiles(x86)").map(PathBuf::from) {
-                protected_paths.push(prog_files_x86);
-            } else {
-                protected_paths.push(PathBuf::from("C:\\Program Files (x86)"));
-            }
-            if let Some(prog_data) = std::env::var_os("ProgramData").map(PathBuf::from) {
-                protected_paths.push(prog_data);
-            } else {
-                protected_paths.push(PathBuf::from("C:\\ProgramData"));
-            }
-            protected_paths.push(PathBuf::from("C:\\System Volume Information"));
-        }
-
-        if self.config.force {
-            protected_paths.clear();
-        } else {
-            protected_paths.retain(|path| !self.root.starts_with(path));
-        }
+        let protected_paths = protected_paths_for_root(&self.root, self.config.force);
 
         let context = ScanContext {
             matcher: &self.matcher,

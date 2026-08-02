@@ -4,6 +4,7 @@
 use crate::fastwalk;
 use crate::patterns::PatternMatcher;
 use crate::pool::SCAN_POOL;
+use crate::protected::{is_protected_for_root, protected_paths_for_root};
 use foldhash::{HashMap, HashMapExt};
 use rayon::prelude::*;
 use std::ffi::OsString;
@@ -84,7 +85,6 @@ pub struct DirTree {
 }
 
 impl DirTree {
-    #[cfg(test)]
     pub fn from_children(children: HashMap<PathBuf, Vec<DirEntry>>) -> Self {
         let children = children
             .into_iter()
@@ -96,7 +96,7 @@ impl DirTree {
         }
     }
 
-    pub(crate) fn from_shared_children(children: HashMap<PathBuf, Arc<Vec<DirEntry>>>) -> Self {
+    pub fn from_shared_children(children: HashMap<PathBuf, Arc<Vec<DirEntry>>>) -> Self {
         Self {
             children,
             sort_modes: HashMap::new(),
@@ -104,7 +104,7 @@ impl DirTree {
     }
 
     #[cfg(target_os = "macos")]
-    pub(crate) fn shared_children(&self) -> &HashMap<PathBuf, Arc<Vec<DirEntry>>> {
+    pub fn shared_children(&self) -> &HashMap<PathBuf, Arc<Vec<DirEntry>>> {
         &self.children
     }
 
@@ -140,90 +140,7 @@ impl DirTree {
         let root_clone = root.to_path_buf();
 
         // Protected directories (NEVER auto-clean inside these, but allow scanning and manual TUI deletion)
-        let mut protected_paths: Vec<PathBuf> = vec![];
-
-        // Home-relative paths
-        if let Some(home) = dirs::home_dir() {
-            protected_paths.extend(vec![
-                home.join(".cargo"),
-                home.join(".rustup"),
-                home.join("go"),
-                home.join(".go"),
-                home.join(".npm"),
-                home.join(".nvm"),
-                home.join(".pyenv"),
-                home.join(".rbenv"),
-                home.join(".gradle"),
-                home.join(".m2"),
-                home.join(".local"),
-                home.join(".config"),
-                home.join(".ssh"),
-                home.join(".gnupg"),
-                home.join("Library"),
-            ]);
-            #[cfg(windows)]
-            {
-                protected_paths.push(home.join("AppData"));
-            }
-        }
-
-        // Unix system directories
-        #[cfg(unix)]
-        {
-            protected_paths.extend(vec![
-                PathBuf::from("/System"),
-                PathBuf::from("/Library"),
-                PathBuf::from("/Applications"),
-                PathBuf::from("/usr"),
-                PathBuf::from("/var"),
-                PathBuf::from("/etc"),
-                PathBuf::from("/bin"),
-                PathBuf::from("/sbin"),
-                PathBuf::from("/lib"),
-                PathBuf::from("/lib64"),
-                PathBuf::from("/boot"),
-                PathBuf::from("/opt"),
-                PathBuf::from("/private"),
-                PathBuf::from("/dev"),
-                PathBuf::from("/proc"),
-                PathBuf::from("/sys"),
-                PathBuf::from("/run"),
-            ]);
-        }
-
-        // Windows system directories
-        #[cfg(windows)]
-        {
-            if let Some(win_dir) = std::env::var_os("SystemRoot").map(PathBuf::from) {
-                protected_paths.push(win_dir);
-            } else {
-                protected_paths.push(PathBuf::from("C:\\Windows"));
-            }
-            if let Some(prog_files) = std::env::var_os("ProgramFiles").map(PathBuf::from) {
-                protected_paths.push(prog_files);
-            } else {
-                protected_paths.push(PathBuf::from("C:\\Program Files"));
-            }
-            if let Some(prog_files_x86) = std::env::var_os("ProgramFiles(x86)").map(PathBuf::from) {
-                protected_paths.push(prog_files_x86);
-            } else {
-                protected_paths.push(PathBuf::from("C:\\Program Files (x86)"));
-            }
-            if let Some(prog_data) = std::env::var_os("ProgramData").map(PathBuf::from) {
-                protected_paths.push(prog_data);
-            } else {
-                protected_paths.push(PathBuf::from("C:\\ProgramData"));
-            }
-            protected_paths.push(PathBuf::from("C:\\System Volume Information"));
-        }
-
-        // Whether the scan root is protected is constant. Remove those paths once
-        // instead of repeating the same root.starts_with check for every entry.
-        if force {
-            protected_paths.clear();
-        } else {
-            protected_paths.retain(|path| !root.starts_with(path));
-        }
+        let protected_paths = protected_paths_for_root(root, force);
 
         let skip_check = Arc::new(move |path: &Path| -> bool {
             if let Some(ref docker) = docker_path {
@@ -454,7 +371,7 @@ fn apply_directory_sizes(
 impl DirTree {
     /// Re-evaluate pattern state without touching the filesystem.
     #[cfg(target_os = "macos")]
-    pub(crate) fn reclassify(&mut self, matcher: &PatternMatcher, root: &Path, force: bool) {
+    pub fn reclassify(&mut self, matcher: &PatternMatcher, root: &Path, force: bool) {
         for (directory, entries) in &mut self.children {
             for entry in Arc::make_mut(entries).iter_mut() {
                 if entry.name == ".." {
@@ -475,7 +392,7 @@ impl DirTree {
 
     /// Reconcile FSEvents hints by exact-scanning only the affected subtrees.
     #[cfg(target_os = "macos")]
-    pub(crate) fn reconcile(
+    pub fn reconcile(
         &mut self,
         dirty: &[PathBuf],
         matcher: &PatternMatcher,
@@ -603,51 +520,6 @@ impl DirTree {
         }
         totals
     }
-}
-
-#[cfg(target_os = "macos")]
-fn is_protected_for_root(root: &Path, path: &Path) -> bool {
-    let mut protected = vec![
-        PathBuf::from("/System"),
-        PathBuf::from("/Library"),
-        PathBuf::from("/Applications"),
-        PathBuf::from("/usr"),
-        PathBuf::from("/var"),
-        PathBuf::from("/etc"),
-        PathBuf::from("/bin"),
-        PathBuf::from("/sbin"),
-        PathBuf::from("/lib"),
-        PathBuf::from("/lib64"),
-        PathBuf::from("/boot"),
-        PathBuf::from("/opt"),
-        PathBuf::from("/private"),
-        PathBuf::from("/dev"),
-        PathBuf::from("/proc"),
-        PathBuf::from("/sys"),
-        PathBuf::from("/run"),
-    ];
-    if let Some(home) = dirs::home_dir() {
-        protected.extend([
-            home.join(".cargo"),
-            home.join(".rustup"),
-            home.join("go"),
-            home.join(".go"),
-            home.join(".npm"),
-            home.join(".nvm"),
-            home.join(".pyenv"),
-            home.join(".rbenv"),
-            home.join(".gradle"),
-            home.join(".m2"),
-            home.join(".local"),
-            home.join(".config"),
-            home.join(".ssh"),
-            home.join(".gnupg"),
-            home.join("Library"),
-        ]);
-    }
-    protected
-        .iter()
-        .any(|protected| !root.starts_with(protected) && path.starts_with(protected))
 }
 
 pub fn sort_by_size(entries: &mut [DirEntry]) {

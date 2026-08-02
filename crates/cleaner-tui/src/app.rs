@@ -2,12 +2,13 @@
 
 #[cfg(target_os = "macos")]
 use super::index::{IndexEvent, IndexService, IndexState};
-use super::tree::{self, DirEntry, DirTree};
-use crate::deleter::Deleter;
-use crate::patterns::PatternMatcher;
-use crate::pool::SCAN_POOL;
-use crate::scanner::Scanner;
-use crate::stats::Stats;
+use cleaner_core::deleter::Deleter;
+use cleaner_core::get_disk_usage;
+use cleaner_core::patterns::PatternMatcher;
+use cleaner_core::pool::SCAN_POOL;
+use cleaner_core::scanner::Scanner;
+use cleaner_core::stats::Stats;
+use cleaner_core::tree::{self, DirEntry, DirTree};
 use crossbeam_channel::bounded;
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -605,7 +606,7 @@ impl App {
         let root = self.current_path.clone();
         let config = self.matcher.config();
         let num_threads = SCAN_POOL.current_num_threads();
-        let worker_pool = crate::pool::build_worker_pool(num_threads, "cleaner-worker");
+        let worker_pool = cleaner_core::pool::build_worker_pool(num_threads, "cleaner-worker");
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancelled = Arc::clone(&cancelled);
 
@@ -642,6 +643,11 @@ impl App {
         }
     }
 
+    /// Stats for a host-owned confirm dialog (does not require confirm_clean).
+    pub fn compute_temp_stats_for_offer(&self) -> (usize, usize, u64) {
+        self.compute_current_temp_stats()
+    }
+
     fn compute_current_temp_stats(&self) -> (usize, usize, u64) {
         if let Some(ref tree) = self.tree {
             tree.get_temp_stats(&self.current_path)
@@ -662,7 +668,7 @@ impl App {
     }
 
     pub fn update_disk_usage(&mut self) {
-        if let Some((total, free)) = get_disk_usage(&self.current_path) {
+        if let Some((total, free)) = get_disk_usage(self.current_path.as_path()) {
             self.disk_total = total;
             self.disk_free = free;
         } else {
@@ -696,92 +702,11 @@ impl Drop for App {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-fn get_disk_usage(path: &std::path::Path) -> Option<(u64, u64)> {
-    use std::ffi::CString;
-    let path_str = path.to_str()?;
-    let c_path = CString::new(path_str).ok()?;
-    unsafe {
-        let mut stat: libc::statvfs = std::mem::zeroed();
-        if libc::statvfs(c_path.as_ptr(), &mut stat) == 0 {
-            let block_size = if stat.f_frsize > 0 {
-                stat.f_frsize as u64
-            } else {
-                stat.f_bsize as u64
-            };
-            let total = block_size * stat.f_blocks as u64;
-            let free = block_size * stat.f_bavail as u64;
-            Some((total, free))
-        } else {
-            None
-        }
-    }
-}
-
-#[cfg(target_os = "freebsd")]
-fn get_disk_usage(path: &std::path::Path) -> Option<(u64, u64)> {
-    use std::ffi::CString;
-    let path_str = path.to_str()?;
-    let c_path = CString::new(path_str).ok()?;
-    unsafe {
-        let mut stat: libc::statfs = std::mem::zeroed();
-        if libc::statfs(c_path.as_ptr(), &mut stat) == 0 {
-            let block_size = stat.f_bsize as u64;
-            let total = block_size * stat.f_blocks as u64;
-            let free = block_size * stat.f_bavail as u64;
-            Some((total, free))
-        } else {
-            None
-        }
-    }
-}
-
-#[cfg(windows)]
-fn get_disk_usage(path: &std::path::Path) -> Option<(u64, u64)> {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
-
-    extern "system" {
-        fn GetDiskFreeSpaceExW(
-            lpDirectoryName: *const u16,
-            lpFreeBytesAvailableToCaller: *mut u64,
-            lpTotalNumberOfBytes: *mut u64,
-            lpTotalNumberOfFreeBytes: *mut u64,
-        ) -> i32;
-    }
-
-    let mut path_u16: Vec<u16> = OsStr::new(path).encode_wide().collect();
-    path_u16.push(0);
-
-    let mut free_bytes = 0u64;
-    let mut total_bytes = 0u64;
-    let mut total_free = 0u64;
-
-    unsafe {
-        if GetDiskFreeSpaceExW(
-            path_u16.as_ptr(),
-            &mut free_bytes,
-            &mut total_bytes,
-            &mut total_free,
-        ) != 0
-        {
-            Some((total_bytes, free_bytes))
-        } else {
-            None
-        }
-    }
-}
-
-#[cfg(not(any(unix, windows)))]
-fn get_disk_usage(_path: &std::path::Path) -> Option<(u64, u64)> {
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
-    use crate::test_support::TempDir;
+    use cleaner_core::config::Config;
+    use cleaner_core::test_support::TempDir;
     use foldhash::{HashMap, HashMapExt};
     use std::time::Duration;
 

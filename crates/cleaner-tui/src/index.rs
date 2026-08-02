@@ -3,9 +3,9 @@
 //! FSEvents are deliberately treated as hints.  The database only receives a
 //! new active generation after authoritative directory scans have completed.
 
-use super::tree::{DirEntry, DirTree, ScanProgress};
-use crate::config::Config;
-use crate::patterns::PatternMatcher;
+use cleaner_core::config::Config;
+use cleaner_core::patterns::PatternMatcher;
+use cleaner_core::tree::{DirEntry, DirTree, ScanProgress};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use foldhash::{HashMap, HashMapExt};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
@@ -894,7 +894,7 @@ mod fsevents {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::TempDir;
+    use cleaner_core::test_support::TempDir;
     use std::os::unix::ffi::OsStringExt;
 
     fn tree(root: &Path) -> DirTree {

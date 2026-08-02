@@ -4,17 +4,6 @@
 //! development temporary files and folders like .terraform, target,
 //! node_modules, __pycache__, etc.
 
-mod config;
-mod deleter;
-mod fastwalk;
-mod patterns;
-mod pool;
-mod scanner;
-mod stats;
-#[cfg(test)]
-mod test_support;
-mod tui;
-
 #[cfg(all(
     feature = "mimalloc-allocator",
     not(feature = "system-allocator"),
@@ -24,8 +13,12 @@ mod tui;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use clap::Parser;
+use cleaner_core::config::Config;
+use cleaner_core::deleter::Deleter;
+use cleaner_core::pool;
+use cleaner_core::scanner::Scanner;
+use cleaner_core::stats::Stats;
 use colored::Colorize;
-use config::Config;
 use crossbeam_channel::bounded;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::PathBuf;
@@ -49,7 +42,7 @@ fn parse_thread_count(value: &str) -> Result<usize, String> {
 /// High-performance folder cleaner for development temp files
 #[derive(Parser, Debug)]
 #[command(name = "cleaner")]
-#[command(author, version, about, long_about = None)]
+#[command(author, version, about = "Fastest disk scanner and cleaner", long_about = None)]
 struct Args {
     /// Target folder to scan (positional or use -f/--folder)
     #[arg(index = 1)]
@@ -201,7 +194,7 @@ fn main() {
 
     // Interactive TUI mode by default when run without folder/path arguments
     if is_interactive {
-        if let Err(e) = tui::run(folder, config, index_requested, args.rebuild_index) {
+        if let Err(e) = cleaner_tui::run(folder, config, index_requested, args.rebuild_index) {
             eprintln!("{} TUI error: {}", "Error:".red().bold(), e);
             std::process::exit(1);
         }
@@ -283,7 +276,7 @@ fn main() {
     }
 
     // Create shared stats
-    let stats = Arc::new(stats::Stats::new());
+    let stats = Arc::new(Stats::new());
 
     // Create channel for scan results
     let (tx, rx) = bounded(1024);
@@ -308,7 +301,7 @@ fn main() {
 
     // Start scanner in separate thread
     let worker_pool = pool::build_worker_pool(num_threads, "cleaner-worker");
-    let scanner = scanner::Scanner::with_pool(
+    let scanner = Scanner::with_pool(
         folder.clone(),
         Arc::clone(&worker_pool),
         Arc::clone(&config),
@@ -316,7 +309,7 @@ fn main() {
     let scan_handle = thread::spawn(move || scanner.scan(tx));
 
     // Create deleter
-    let deleter = deleter::Deleter::with_pool(
+    let deleter = Deleter::with_pool(
         Arc::clone(&stats),
         !args.confirm,
         args.verbose && !args.json,

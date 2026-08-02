@@ -43,8 +43,15 @@ Download the latest binary from [Releases](https://github.com/vyrti/cleaner/rele
 ### From Source
 
 ```bash
-cargo install --git https://github.com/vyrti/cleaner
+cargo install --path crates/cleaner-tui --locked
+# or from git once published:
+# cargo install --git https://github.com/vyrti/cleaner --locked
 ```
+
+Workspace layout:
+
+- `crates/cleaner-core` — scan/clean/analyze engine (library)
+- `crates/cleaner-tui` — TUI library + `cleaner` binary
 
 ### Docker
 

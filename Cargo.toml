@@ -1,66 +1,15 @@
-[package]
-name = "cleaner"
+[workspace]
+members = [
+    "crates/cleaner-core",
+    "crates/cleaner-tui",
+]
+default-members = ["crates/cleaner-tui"]
+resolver = "2"
+
+[workspace.package]
 version = "0.0.8"
 edition = "2021"
-description = "Fastest disk scanner and cleaner"
 license = "MIT OR Apache-2.0"
-
-[features]
-default = ["mimalloc-allocator"]
-mimalloc-allocator = ["dep:mimalloc"]
-system-allocator = []
-
-[dependencies]
-# CLI parsing
-clap = { version = "4", features = ["derive"] }
-
-# Data parallelism for deletions
-rayon = "1.12"
-
-# Lock-free channels for producer-consumer
-crossbeam-channel = "0.5"
-
-# Fast randomized hashing for in-memory filesystem paths
-foldhash = "0.2"
-
-# Progress indicators
-indicatif = "0.18"
-
-# Human-readable byte sizes
-humansize = "2"
-
-# Colored terminal output
-colored = "3"
-
-# Config parsing
-serde = { version = "1", features = ["derive"] }
-toml = "1.1"
-
-# Home directory detection
-dirs = "6"
-
-# TUI
-ratatui = "0.30"
-crossterm = "0.29"
-
-# System API access
-libc = "0.2"
-
-# The macOS system allocator matches mimalloc in native profiles and produces
-# a smaller binary, so do not even compile mimalloc there.
-[target.'cfg(not(target_os = "macos"))'.dependencies]
-mimalloc = { version = "0.1", default-features = false, optional = true }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-redb = "4.1.0"
-objc2-core-foundation = { version = "0.3.2", features = ["std", "CFString", "CFArray", "CFRunLoop"] }
-objc2-core-services = { version = "0.3.2", features = ["std", "libc", "FSEvents"] }
-dispatch2 = "0.3.1"
-
-# Linux and FreeBSD file descriptor APIs
-[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
-rustix = { version = "1.1", features = ["fs"] }
-
 
 [profile.release]
 lto = true
