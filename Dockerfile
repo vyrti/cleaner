@@ -10,8 +10,9 @@ RUN apk add --no-cache musl-dev
 WORKDIR /app
 
 # Copy source
-COPY Cargo.toml ./
-COPY src ./src
+COPY Cargo.toml Cargo.lock* ./
+COPY crates ./crates
+
 
 # Build for the target platform
 RUN case "$TARGETPLATFORM" in \

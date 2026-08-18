@@ -1,7 +1,6 @@
 # Cleaner
 
-[![Build](https://github.com/vyrti/cleaner/actions/workflows/build.yml/badge.svg)](https://github.com/vyrti/cleaner/actions/workflows/build.yml)
-[![Release](https://github.com/vyrti/cleaner/actions/workflows/release.yml/badge.svg)](https://github.com/vyrti/cleaner/actions/workflows/release.yml)
+[![CI & Release](https://github.com/vyrti/cleaner/actions/workflows/ci.yml/badge.svg)](https://github.com/vyrti/cleaner/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT%20or%20Apache%202.0-blue.svg)](#license)
 
 > [!WARNING]
