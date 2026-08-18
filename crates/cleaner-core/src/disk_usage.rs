@@ -87,3 +87,23 @@ fn get_disk_usage_inner(path: &Path) -> Option<(u64, u64)> {
 fn get_disk_usage_inner(_path: &Path) -> Option<(u64, u64)> {
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disk_usage_returns_valid_stats_for_existing_directory() {
+        let temp = std::env::temp_dir();
+        if let Some((total, free)) = get_disk_usage(&temp) {
+            assert!(total > 0);
+            assert!(free <= total);
+        }
+    }
+
+    #[test]
+    fn disk_usage_handles_nonexistent_path() {
+        let missing = Path::new("/path/that/does/not/exist/ever/12345");
+        let _ = get_disk_usage(missing);
+    }
+}

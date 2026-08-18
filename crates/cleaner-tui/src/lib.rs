@@ -1,11 +1,13 @@
-//! Cleaner interactive TUI library (embeddable Session + standalone run).
+//! Interactive TUI interface and CLI binary for Cleaner.
+//!
+//! Provides the standalone `cleaner` CLI application and embeddable `Session`
+//! component for host applications (such as Abyss).
 
-mod app;
+pub mod app;
+pub mod cli;
 mod events;
-#[cfg(target_os = "macos")]
-mod index;
-mod session;
-mod ui;
+pub mod session;
+pub mod ui;
 
 pub use app::App;
 pub use cleaner_core::config::Config;

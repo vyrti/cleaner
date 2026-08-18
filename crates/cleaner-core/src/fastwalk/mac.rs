@@ -203,9 +203,7 @@ pub(super) fn read_open_directory(
                 if name != "." && name != ".." {
                     let is_dir = header.obj_type == VDIR;
                     let is_symlink = header.obj_type == VLNK;
-                    let size = if !is_dir
-                        && !is_symlink
-                        && metadata_mode == MetadataMode::WithSizes
+                    let size = if !is_dir && !is_symlink && metadata_mode == MetadataMode::WithSizes
                     {
                         let mut offset = std::mem::size_of::<EntryPrefix>();
                         let mut alloc_size = None;
@@ -218,7 +216,8 @@ pub(super) fn read_open_directory(
                                     "truncated getattrlistbulk file alloc size",
                                 ));
                             }
-                            let val = unsafe { std::ptr::read_unaligned(ptr.add(offset).cast::<u64>()) };
+                            let val =
+                                unsafe { std::ptr::read_unaligned(ptr.add(offset).cast::<u64>()) };
                             alloc_size = Some(val);
                             offset += std::mem::size_of::<u64>();
                         }
@@ -230,7 +229,8 @@ pub(super) fn read_open_directory(
                                     "truncated getattrlistbulk file data length",
                                 ));
                             }
-                            let val = unsafe { std::ptr::read_unaligned(ptr.add(offset).cast::<u64>()) };
+                            let val =
+                                unsafe { std::ptr::read_unaligned(ptr.add(offset).cast::<u64>()) };
                             data_length = Some(val);
                         }
 

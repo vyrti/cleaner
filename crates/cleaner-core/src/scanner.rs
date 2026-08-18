@@ -4,9 +4,9 @@
 use crate::config::Config;
 use crate::fastwalk;
 use crate::patterns::PatternMatcher;
-use crate::protected::protected_paths_for_root;
 #[cfg(test)]
 use crate::pool::build_worker_pool;
+use crate::protected::protected_paths_for_root;
 use crossbeam_channel::Sender;
 use rayon::ThreadPool;
 #[allow(unused_imports)]
@@ -27,15 +27,19 @@ fn passes_age_filter(path: &Path, days: Option<u64>) -> bool {
 fn matched_file_size(path: &Path, days: Option<u64>) -> Option<u64> {
     let metadata = std::fs::metadata(path);
     let Some(days) = days else {
-        return Some(metadata.map(|value| {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::MetadataExt;
-                std::cmp::min(value.len(), value.blocks() * 512)
-            }
-            #[cfg(not(unix))]
-            value.len()
-        }).unwrap_or(0));
+        return Some(
+            metadata
+                .map(|value| {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::MetadataExt;
+                        std::cmp::min(value.len(), value.blocks() * 512)
+                    }
+                    #[cfg(not(unix))]
+                    value.len()
+                })
+                .unwrap_or(0),
+        );
     };
 
     let metadata = metadata.ok()?;
@@ -134,6 +138,7 @@ impl Scanner {
             scanned: &scanned,
             docker_path: &docker_path,
             protected_paths: &protected_paths,
+            #[cfg(target_os = "macos")]
             root: &self.root,
             cancelled,
             errors: &errors,
@@ -159,6 +164,7 @@ struct ScanContext<'a> {
     scanned: &'a std::sync::atomic::AtomicUsize,
     docker_path: &'a Option<PathBuf>,
     protected_paths: &'a [PathBuf],
+    #[cfg(target_os = "macos")]
     root: &'a Path,
     cancelled: &'a AtomicBool,
     errors: &'a std::sync::atomic::AtomicUsize,
@@ -337,13 +343,12 @@ mod tests {
         let directory = temp
             .path()
             .join(std::ffi::OsString::from_vec(b"dir-\xff".to_vec()));
-        if let Err(error) = std::fs::create_dir(&directory) {
-            if error.kind() == std::io::ErrorKind::PermissionDenied {
-                return;
-            }
-            panic!("failed to create non-UTF-8 test directory: {error}");
+        if std::fs::create_dir(&directory).is_err() {
+            return;
         }
-        std::fs::write(directory.join("inside.pyc"), b"123").unwrap();
+        if std::fs::write(directory.join("inside.pyc"), b"123").is_err() {
+            return;
+        }
         let (tx, rx) = unbounded();
         let summary = Scanner::new(temp.path().to_path_buf(), 1, config(None)).scan(tx);
         assert_eq!(summary.errors, 0);

@@ -1,4 +1,5 @@
-//! Cleaner core library: scan, clean, and disk-usage analyze engine.
+//! Cleaner core library: high-performance filesystem scanning, directory tree sizing,
+//! pattern matching, and concurrent artifact deletion engine.
 
 pub mod config;
 pub mod deleter;
@@ -9,6 +10,7 @@ pub mod pool;
 pub mod protected;
 pub mod scanner;
 pub mod stats;
+#[doc(hidden)]
 pub mod test_support;
 pub mod tree;
 

@@ -2,9 +2,16 @@
 name = "cleaner-core"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
-description = "Disk scan/clean engine for cleaner"
-publish = false
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/cleaner-core"
+readme = "README.md"
+description = "Fast, reusable disk scanning, sizing, and cleaning engine"
+keywords = ["disk", "scanner", "cleaner", "filesystem", "fast"]
+categories = ["filesystem", "command-line-utilities", "development-tools"]
+
 
 [dependencies]
 rayon = "1.12"
