@@ -26,22 +26,23 @@ mimalloc-allocator = ["dep:mimalloc"]
 system-allocator = []
 
 [dependencies]
-cleaner-core = { version = "0.1.0", path = "../cleaner-core" }
-clap = { version = "4", features = ["derive"] }
-rayon = "1.12"
-crossbeam-channel = "0.5"
-foldhash = "0.2"
-indicatif = "0.18"
-humansize = "2"
-colored = "3"
-serde = { version = "1", features = ["derive"] }
-toml = "1.1"
-dirs = "6"
-ratatui = "0.30"
-crossterm = "0.29"
-libc = "0.2"
-unicode-width = "0.2"
+cleaner-core.workspace = true
+clap.workspace = true
+rayon.workspace = true
+crossbeam-channel.workspace = true
+foldhash.workspace = true
+indicatif.workspace = true
+humansize.workspace = true
+colored.workspace = true
+serde.workspace = true
+toml.workspace = true
+dirs.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+libc.workspace = true
+unicode-width.workspace = true
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-mimalloc = { version = "0.1", default-features = false, optional = true }
+mimalloc = { workspace = true, optional = true }
+
 
