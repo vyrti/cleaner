@@ -2,6 +2,7 @@ use super::types::{Outcome, StartOpts};
 use super::Session;
 use crate::ui::Chrome;
 use cleaner_core::config::Config;
+use cleaner_core::sysclean::{elevate, Target};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture},
     execute,
@@ -53,6 +54,17 @@ pub fn run(
             if session.is_exited() {
                 return Ok(());
             }
+
+            // Administrator work cannot run from a worker thread: it needs the
+            // terminal for a password or UAC prompt. This loop owns the
+            // terminal, so it is the only place that can hand it over.
+            let elevated = session.take_elevated();
+            if !elevated.is_empty() {
+                let (done, failed) = run_elevated(&mut terminal, &elevated)?;
+                session.report_elevated(done, failed);
+                continue;
+            }
+
             terminal.draw(|f| {
                 let area = f.area();
                 session.draw(f, area, Chrome::Full);
@@ -69,4 +81,45 @@ pub fn run(
 
     cleanup_terminal();
     result
+}
+
+/// Drop out of the TUI, run the elevated batch with inherited stdio, and come
+/// back.
+///
+/// The screen has to be fully released first, otherwise the password prompt is
+/// swallowed by the alternate screen and the user sees a frozen UI.
+fn run_elevated(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    targets: &[Target],
+) -> io::Result<(usize, Vec<(String, String)>)> {
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
+
+    println!("\ncleaner needs administrator rights for the following:\n");
+    for line in elevate::preview(targets) {
+        println!("  {line}");
+    }
+    println!();
+    let _ = io::stdout().flush();
+
+    let report = elevate::run_elevated(targets);
+
+    if let Some(script) = &report.script {
+        println!("\nScript written to {}", script.display());
+    }
+    let _ = io::stdout().flush();
+
+    enable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        EnterAlternateScreen,
+        EnableMouseCapture
+    )?;
+    terminal.clear()?;
+
+    Ok((report.done.len(), report.failed))
 }

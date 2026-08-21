@@ -1,6 +1,7 @@
 //! TUI rendering — Norton/Abyss palette and digit action bar.
 
 mod buttons;
+mod deep;
 mod layout;
 mod progress;
 mod theme;
@@ -51,13 +52,19 @@ pub fn render_in(f: &mut Frame, app: &App, area: Rect, chrome: Chrome) {
         Chrome::ContentOnly => (area, None, None),
     };
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(5)])
-        .split(content);
+    // Deep Clean takes over the content area entirely; the status line and
+    // digit bar below it keep rendering.
+    if app.in_deep() {
+        deep::render(f, app, content);
+    } else {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Min(5)])
+            .split(content);
 
-    layout::render_header(f, app, chunks[0]);
-    layout::render_list(f, app, chunks[1]);
+        layout::render_header(f, app, chunks[0]);
+        layout::render_list(f, app, chunks[1]);
+    }
 
     if let Some(status_area) = status_area {
         layout::render_status(f, app, status_area);

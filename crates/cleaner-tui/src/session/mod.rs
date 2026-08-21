@@ -14,6 +14,7 @@ use crate::app::App;
 use crate::ui::{self, Chrome};
 use cleaner_core::config::Config;
 use cleaner_core::patterns::PatternMatcher;
+use cleaner_core::sysclean::Target;
 use cleaner_core::tree::{DirTree, ScanProgress};
 use ratatui::prelude::*;
 use std::path::PathBuf;
@@ -177,14 +178,41 @@ impl Session {
     pub fn show_help_status(&mut self) {
         if let types::Phase::Ready(app) = &mut self.phase {
             app.status_message = Some(
-                "Keys: ↑↓/jk nav  Enter open  ← back  4/s sort  5/c clean  6/d delete  7/r refresh  Esc leave  0 quit"
+                "Keys: ↑↓/jk nav  Enter open  ← back  3/s sort  4 deep clean  5/c clean  6/d delete  7/r refresh  Esc leave  0 quit"
                     .into(),
             );
             app.status_time = Some(Instant::now());
         }
     }
 
+    /// True while the Deep Clean view is open.
+    pub fn in_deep(&self) -> bool {
+        matches!(&self.phase, types::Phase::Ready(app) if app.in_deep())
+    }
+
     pub fn is_exited(&self) -> bool {
         matches!(self.phase, types::Phase::Exited)
+    }
+
+    /// Deep Clean targets that need administrator rights.
+    ///
+    /// Returned once, then cleared. The caller must own the terminal: running
+    /// these requires leaving the alternate screen so a password or UAC prompt
+    /// can reach the user. An embedder that never calls this simply never runs
+    /// them, and the rows stay listed - see [`run_elevated`].
+    ///
+    /// [`run_elevated`]: Self::run_elevated
+    pub fn take_elevated(&mut self) -> Vec<Target> {
+        match &mut self.phase {
+            types::Phase::Ready(app) => app.take_elevated(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Report the outcome of an elevated batch back into the view.
+    pub fn report_elevated(&mut self, done: usize, failed: Vec<(String, String)>) {
+        if let types::Phase::Ready(app) = &mut self.phase {
+            app.report_elevated(done, failed);
+        }
     }
 }

@@ -9,8 +9,8 @@ use ratatui::{
 pub enum ActionButton {
     Help,
     Empty2,
-    Empty3,
     Sort,
+    Deep,
     Clean,
     Delete,
     Refresh,
@@ -24,8 +24,8 @@ impl ActionButton {
         match self {
             Self::Help => '1',
             Self::Empty2 => '2',
-            Self::Empty3 => '3',
-            Self::Sort => '4',
+            Self::Sort => '3',
+            Self::Deep => '4',
             Self::Clean => '5',
             Self::Delete => '6',
             Self::Refresh => '7',
@@ -38,8 +38,9 @@ impl ActionButton {
     pub fn label(self) -> &'static str {
         match self {
             Self::Help => "Help",
-            Self::Empty2 | Self::Empty3 | Self::Empty8 | Self::Empty9 => "",
+            Self::Empty2 | Self::Empty8 | Self::Empty9 => "",
             Self::Sort => "Sort",
+            Self::Deep => "Deep",
             Self::Clean => "Clean",
             Self::Delete => "Delete",
             Self::Refresh => "Refresh",
@@ -48,18 +49,15 @@ impl ActionButton {
     }
 
     pub fn disabled(self) -> bool {
-        matches!(
-            self,
-            Self::Empty2 | Self::Empty3 | Self::Empty8 | Self::Empty9
-        )
+        matches!(self, Self::Empty2 | Self::Empty8 | Self::Empty9)
     }
 }
 
 pub const BUTTONS: [ActionButton; 10] = [
     ActionButton::Help,
     ActionButton::Empty2,
-    ActionButton::Empty3,
     ActionButton::Sort,
+    ActionButton::Deep,
     ActionButton::Clean,
     ActionButton::Delete,
     ActionButton::Refresh,

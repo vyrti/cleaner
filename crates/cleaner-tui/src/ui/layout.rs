@@ -7,6 +7,9 @@ use ratatui::{
 };
 
 pub fn status_line(app: &App) -> Option<String> {
+    if let Some(state) = app.deep.as_ref() {
+        return super::deep::status(state);
+    }
     if let Some((phase, current, total)) = app.rebuild_progress() {
         let stage = match phase {
             0 => "scanning",
@@ -151,7 +154,9 @@ pub fn render_list(f: &mut Frame, app: &App, area: Rect) {
 
 pub fn render_status(f: &mut Frame, app: &App, area: Rect) {
     let text = status_line(app).unwrap_or_default();
-    let style = if app.confirm_delete || app.confirm_clean {
+    let style = if let Some(deep_style) = app.deep.as_ref().and_then(super::deep::status_style) {
+        deep_style
+    } else if app.confirm_delete || app.confirm_clean {
         CONFIRM
     } else {
         CORE

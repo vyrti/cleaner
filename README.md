@@ -15,6 +15,7 @@
 
 - **Ultra-Fast** - Parallel scanning uses all CPU cores and written in Rust (3x faster than Go-based `gdu` on 250gb+ drives)
 - **Smart Deletion** - Finds and removes common dev artifacts: `node_modules`, `.terraform`, `target`, `__pycache__`, etc.
+- **Deep Clean** (`4` in the TUI) - A curated, checkbox-driven sweep of the caches that actually fill a machine: Docker disk images, Homebrew/npm/Go/Cargo caches, Xcode DerivedData, browser and editor caches, and OS-level junk. macOS, Windows and Linux.
 - **Configurable** - TOML config + environment variables
 - **Safe** - Dry-run mode and time-based filtering (`--days`)
 - **Cross-platform** - Windows, Linux, macOS, FreeBSD | ARM64 and x64
@@ -97,6 +98,72 @@ cleaner ~/Projects --confirm --days 7
 | `--days` | Only delete items older than N days |
 | `--json` | Output results in JSON format (forces CLI mode) |
 | `--force` | Disable system directory protections (allow automated cleaning inside protected paths) |
+
+## Deep Clean
+
+Press `4` in the TUI. The browser finds junk by *matching patterns* as it walks, which
+by design cannot reach into `~/Library`, `~/.cargo`, `/private` and the other
+directories [protection](#safety--system-protection) keeps it out of. Deep Clean works the
+other way round: it measures a hand-written catalog of known cache locations and
+presents them as a checklist.
+
+```
+┌ Deep Clean ────────────────────────────────────────────────────────────────┐
+│ 14 marked, 21.3 GiB selected  │  62 rows  │  Free: 40.7 GiB                │
+└────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────┐
+│ ─ Dev caches (12) ─────────────────────────────────────────────  8.42 GiB  │
+│ [x] Xcode DerivedData         build intermediates; rebuilt       3.60 GiB  │
+│ [x] Homebrew cache            brew cleanup -s --prune=all        1.80 GiB  │
+│ [ ] Playwright browsers       re-downloaded on next test run      805 MiB  │
+│ ─ Containers & VMs (2) ────────────────────────────────────────    46 GiB  │
+│ [ ] Docker · WIPE disk image  ⚠ ALL images/containers/volumes      46 GiB  │
+│ ─ Needs admin (5) ─────────────────────────────────────────────  5.30 GiB  │
+│ [ ] macOS Install Data        leftover installer bundle          3.10 GiB  │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+| Key | Action |
+|-----|--------|
+| `space` | toggle the row under the cursor |
+| `a` / `u` | mark every safe row / unmark everything |
+| `←` / `→` | collapse / expand a section |
+| `h` | show rows whose paths do not exist on this machine |
+| `r` | measure again |
+| `enter` | run the marked rows |
+| `esc` / `4` | back to the browser |
+
+### Tiers
+
+Every entry carries a tier, and **only `safe` rows are ticked by default**:
+
+- **safe** - pure cache. Nothing is lost; it regenerates.
+- **reclaimable** - real work is discarded or has to be re-downloaded (Gradle and
+  Maven caches, Xcode archives, iOS backups, unused toolchains).
+- **destructive** - irreversible and expensive. Docker's disk image, `Windows.old`.
+  Requires typing `WIPE` before it runs.
+- **needs admin** - cannot run in-process. The TUI suspends itself so `sudo` can
+  prompt; on Windows it generates a PowerShell script and hands it to UAC.
+
+Entries whose paths do not exist are dropped, so the list only ever shows what
+this machine actually has. Where deleting files by hand would corrupt a tool's
+own bookkeeping, the tool is invoked instead (`brew cleanup`, `docker system
+prune`, `go clean -modcache`, `rustup toolchain uninstall`, `xcrun simctl
+delete`); rows whose binary is not on `PATH` are hidden.
+
+Some things are listed but **never deletable** - VirtualBox/VMware/Parallels disks
+and WSL distributions are shown with their size so you know where the space went,
+and left alone.
+
+### Why this is safe to point at `~/Library`
+
+Deep Clean does not use `--force`, and it does not disable the protection rules.
+It uses the opposite model: a curated allowlist. Every path is written out by
+hand, and before anything is deleted the executor checks that the resolved path
+lies strictly inside a known root - so a typo in the catalog cannot become
+`rm -rf ~`. The same property is asserted over the entire catalog in the test
+suite, along with a rule that no `safe` entry may reach into Documents,
+Pictures, Mail or your keys.
 
 ## Safety & System Protection
 

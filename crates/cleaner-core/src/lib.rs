@@ -10,6 +10,7 @@ pub mod pool;
 pub mod protected;
 pub mod scanner;
 pub mod stats;
+pub mod sysclean;
 #[doc(hidden)]
 pub mod test_support;
 pub mod tree;
@@ -21,4 +22,5 @@ pub use patterns::PatternMatcher;
 pub use protected::{is_protected_for_root, protected_paths_for_root};
 pub use scanner::{ScanResult, ScanSummary, Scanner};
 pub use stats::Stats;
+pub use sysclean::{Candidate, Group, Target, Tier};
 pub use tree::{DirEntry, DirTree, ScanProgress};

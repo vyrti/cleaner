@@ -158,8 +158,9 @@ fn session_key_events_in_ready_state() {
         Outcome::Continue
     );
 
-    // Number keys and vim keys
-    for k in ['2', '3', '8', '9', 'j', 'k', 'g', 'G', '4', '5', '6', '7'] {
+    // Number keys and vim keys. '4' is excluded: it opens Deep Clean, which
+    // takes over the keyboard, and is covered by its own test below.
+    for k in ['2', '8', '9', 'j', 'k', 'g', 'G', '3', '5', '6', '7'] {
         assert_eq!(
             session.handle_event(key(KeyCode::Char(k))),
             Outcome::Continue
@@ -205,4 +206,67 @@ fn session_clean_offer_empty_and_run_clean() {
 
     // Test run_clean call
     session.run_clean();
+}
+
+/// Deep Clean captures the keyboard, so the browser's quit and delete bindings
+/// must not fire while it is open.
+#[test]
+fn deep_clean_opens_on_four_and_returns_on_escape() {
+    let temp = TempDir::new("session-deep");
+    temp.write("src/main.rs", b"fn main() {}");
+
+    let config = Arc::new(Config {
+        directories: vec!["target".into()],
+        files: vec![".pyc".into()],
+        days: None,
+        force: false,
+    });
+
+    let mut session = Session::start(temp.path().to_path_buf(), config, StartOpts::default());
+    wait_for_ready(&mut session);
+
+    assert_eq!(
+        session.handle_event(key(KeyCode::Char('4'))),
+        Outcome::Continue
+    );
+    assert!(session.in_deep(), "'4' should open Deep Clean");
+
+    // 'q' must not quit the app from inside Deep Clean.
+    assert_eq!(
+        session.handle_event(key(KeyCode::Char('q'))),
+        Outcome::Continue
+    );
+    assert!(
+        !session.is_exited(),
+        "leaving Deep Clean must not exit the app"
+    );
+    assert!(!session.in_deep(), "'q' should return to the browser");
+
+    // Back in the browser, 'q' quits as before.
+    assert_eq!(session.handle_event(key(KeyCode::Char('q'))), Outcome::Exit);
+}
+
+/// Elevated targets are only handed over when the user has actually run
+/// something that produced them.
+#[test]
+fn no_elevated_work_is_offered_by_default() {
+    let temp = TempDir::new("session-elevated");
+    temp.write("src/main.rs", b"fn main() {}");
+
+    let config = Arc::new(Config {
+        directories: vec!["target".into()],
+        files: vec![".pyc".into()],
+        days: None,
+        force: false,
+    });
+
+    let mut session = Session::start(temp.path().to_path_buf(), config, StartOpts::default());
+    wait_for_ready(&mut session);
+
+    assert!(session.take_elevated().is_empty());
+    session.handle_event(key(KeyCode::Char('4')));
+    assert!(
+        session.take_elevated().is_empty(),
+        "opening the view must not queue elevated work"
+    );
 }

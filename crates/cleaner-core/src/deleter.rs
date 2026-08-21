@@ -10,7 +10,14 @@ use rayon::prelude::*;
 use rayon::ThreadPool;
 use std::fs;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+/// Where a `Deleter` sends its per-item error and verbose output.
+///
+/// The CLI wants these on stderr/stdout. A TUI must not: writing to the
+/// terminal from a worker thread scribbles over the alternate screen, so it
+/// passes a collector instead and renders the lines itself.
+pub type MessageSink = Arc<Mutex<Vec<String>>>;
 
 #[derive(Default)]
 struct DeleteOutcome {
@@ -19,6 +26,7 @@ struct DeleteOutcome {
     bytes: u64,
     errors: Vec<String>,
     verbose: Option<String>,
+    verbose_lines: Vec<String>,
 }
 
 impl DeleteOutcome {
@@ -28,8 +36,9 @@ impl DeleteOutcome {
         self.bytes = self.bytes.saturating_add(other.bytes);
         self.errors.extend(other.errors);
         if let Some(line) = other.verbose {
-            println!("{line}");
+            self.verbose_lines.push(line);
         }
+        self.verbose_lines.extend(other.verbose_lines);
     }
 }
 
@@ -40,6 +49,7 @@ pub struct Deleter {
     verbose: bool,
     pool: Arc<ThreadPool>,
     batch_size: usize,
+    sink: Option<MessageSink>,
 }
 
 impl Deleter {
@@ -58,11 +68,35 @@ impl Deleter {
         )
     }
 
+    /// Deleter that reports errors on stderr and verbose lines on stdout.
     pub fn with_pool(
         stats: Arc<Stats>,
         dry_run: bool,
         verbose: bool,
         pool: Arc<ThreadPool>,
+    ) -> Self {
+        Self::build(stats, dry_run, verbose, pool, None)
+    }
+
+    /// Deleter that collects its output instead of printing it.
+    ///
+    /// Required by any caller holding the terminal - see [`MessageSink`].
+    pub fn with_sink(
+        stats: Arc<Stats>,
+        dry_run: bool,
+        verbose: bool,
+        pool: Arc<ThreadPool>,
+        sink: MessageSink,
+    ) -> Self {
+        Self::build(stats, dry_run, verbose, pool, Some(sink))
+    }
+
+    fn build(
+        stats: Arc<Stats>,
+        dry_run: bool,
+        verbose: bool,
+        pool: Arc<ThreadPool>,
+        sink: Option<MessageSink>,
     ) -> Self {
         let batch_size = pool
             .current_num_threads()
@@ -74,6 +108,22 @@ impl Deleter {
             verbose,
             pool,
             batch_size,
+            sink,
+        }
+    }
+
+    /// Route a line to the sink when there is one, otherwise to the terminal.
+    fn emit(&self, line: &str, is_error: bool) {
+        if let Some(sink) = &self.sink {
+            if let Ok(mut lines) = sink.lock() {
+                lines.push(line.to_string());
+            }
+            return;
+        }
+        if is_error {
+            eprintln!("{line}");
+        } else {
+            println!("{line}");
         }
     }
 
@@ -111,8 +161,11 @@ impl Deleter {
         for outcome in outcomes {
             batch_outcome.merge(outcome);
         }
+        for line in &batch_outcome.verbose_lines {
+            self.emit(line, false);
+        }
         for error in &batch_outcome.errors {
-            eprintln!("{error}");
+            self.emit(error, true);
         }
         self.stats.add_batch(
             batch_outcome.directories,

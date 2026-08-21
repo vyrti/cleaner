@@ -290,3 +290,258 @@ fn rebuild_state_progress_and_cancellation() {
     assert!(!app.is_rebuilding());
     assert_eq!(app.status_message.as_deref(), Some("Rebuild cancelled"));
 }
+
+/// Build a Deep Clean state with known rows, bypassing the real catalog.
+fn deep_state_with(
+    home: &std::path::Path,
+    items: Vec<cleaner_core::sysclean::Candidate>,
+) -> crate::app::DeepState {
+    use crate::app::DeepPhase;
+    use cleaner_core::tree::ScanProgress;
+    use std::sync::atomic::AtomicBool;
+
+    let handle = thread::spawn(Vec::new);
+    let mut state = crate::app::DeepState::new(
+        home.to_path_buf(),
+        Arc::new(ScanProgress::new()),
+        Arc::new(AtomicBool::new(false)),
+        handle,
+    );
+    let _ = state.probe_handle.take().map(|h| h.join());
+    state.marked = items.iter().map(|c| c.target.default_marked()).collect();
+    state.items = items;
+    state.phase = DeepPhase::Ready;
+    state
+}
+
+fn candidate(
+    id: &str,
+    tier: cleaner_core::sysclean::Tier,
+    action: cleaner_core::sysclean::Action,
+) -> cleaner_core::sysclean::Candidate {
+    use cleaner_core::sysclean::{Candidate, Group, Target};
+    Candidate {
+        target: Target {
+            id: id.into(),
+            group: Group::DevCache,
+            label: id.into(),
+            detail: "d".into(),
+            tier,
+            action,
+            probe: vec![],
+            requires: None,
+        },
+        size: 1024,
+        present: true,
+    }
+}
+
+#[test]
+fn deep_marking_selects_only_safe_rows_and_survives_navigation() {
+    use cleaner_core::sysclean::{Action, Tier};
+
+    let temp = TempDir::new("deep-marking");
+    let mut app = app_with_tree(&temp);
+
+    let items = vec![
+        candidate("safe", Tier::Safe, Action::Remove(vec![temp.join("a")])),
+        candidate(
+            "risky",
+            Tier::Reclaimable,
+            Action::Remove(vec![temp.join("b")]),
+        ),
+        candidate(
+            "nuke",
+            Tier::Destructive,
+            Action::Remove(vec![temp.join("c")]),
+        ),
+    ];
+    app.deep = Some(deep_state_with(temp.path(), items));
+
+    // Only the pure cache is pre-selected.
+    assert_eq!(app.deep.as_ref().unwrap().marked_count(), 1);
+
+    app.deep_unmark_all();
+    assert_eq!(app.deep.as_ref().unwrap().marked_count(), 0);
+
+    app.deep_mark_safe();
+    assert_eq!(app.deep.as_ref().unwrap().marked_count(), 1);
+
+    // Toggling the row under the cursor flips just that row.
+    app.deep_go_top();
+    app.deep_toggle();
+    assert_eq!(app.deep.as_ref().unwrap().marked_count(), 0);
+    app.deep_toggle();
+    assert_eq!(app.deep.as_ref().unwrap().marked_count(), 1);
+
+    // Unlike the browser list, moving the cursor must not clear the marks.
+    app.deep_move(1);
+    app.deep_move(1);
+    app.deep_move(-1);
+    assert_eq!(
+        app.deep.as_ref().unwrap().marked_count(),
+        1,
+        "navigation must not reset marks"
+    );
+}
+
+#[test]
+fn deep_report_only_rows_cannot_be_marked() {
+    use cleaner_core::sysclean::{Action, Tier};
+
+    let temp = TempDir::new("deep-report-only");
+    let mut app = app_with_tree(&temp);
+    app.deep = Some(deep_state_with(
+        temp.path(),
+        vec![candidate("vm", Tier::Reclaimable, Action::ReportOnly)],
+    ));
+
+    app.deep_go_top();
+    app.deep_toggle();
+
+    assert_eq!(
+        app.deep.as_ref().unwrap().marked_count(),
+        0,
+        "report-only rows must never become marked"
+    );
+}
+
+/// A marked destructive row forces the typed-confirmation phase instead of the
+/// plain y/n prompt.
+#[test]
+fn deep_destructive_rows_require_typing_the_word() {
+    use crate::app::{DeepPhase, DESTRUCTIVE_WORD};
+    use cleaner_core::sysclean::{Action, Tier};
+
+    let temp = TempDir::new("deep-destructive");
+    temp.write("nuke/file.bin", &[1u8; 512]);
+    let mut app = app_with_tree(&temp);
+    app.deep = Some(deep_state_with(
+        temp.path(),
+        vec![candidate(
+            "nuke",
+            Tier::Destructive,
+            Action::Remove(vec![temp.join("nuke")]),
+        )],
+    ));
+
+    app.deep_go_top();
+    app.deep_toggle();
+    app.deep_begin_confirm();
+    assert_eq!(app.deep.as_ref().unwrap().phase, DeepPhase::Typing);
+
+    // The wrong word does nothing at all.
+    for ch in "nope".chars() {
+        app.deep_type(ch);
+    }
+    app.deep_execute();
+    assert_eq!(
+        app.deep.as_ref().unwrap().phase,
+        DeepPhase::Typing,
+        "a wrong confirmation word must not start the run"
+    );
+    assert!(temp.join("nuke/file.bin").exists());
+
+    // The right one starts it.
+    app.deep_unmark_all();
+    app.deep_toggle();
+    app.deep_begin_confirm();
+    for ch in DESTRUCTIVE_WORD.chars() {
+        app.deep_type(ch);
+    }
+    app.deep_execute();
+    wait_until_idle(&mut app);
+    assert!(matches!(
+        app.deep.as_ref().unwrap().phase,
+        DeepPhase::Done(_)
+    ));
+}
+
+#[test]
+fn deep_safe_rows_run_after_a_plain_confirmation() {
+    use crate::app::DeepPhase;
+    use cleaner_core::sysclean::{Action, Tier};
+
+    let temp = TempDir::new("deep-run-safe");
+    temp.write("cache/file.bin", &[1u8; 4096]);
+    let mut app = app_with_tree(&temp);
+    app.deep = Some(deep_state_with(
+        temp.path(),
+        vec![candidate(
+            "cache",
+            Tier::Safe,
+            Action::Remove(vec![temp.join("cache")]),
+        )],
+    ));
+
+    app.deep_begin_confirm();
+    assert_eq!(app.deep.as_ref().unwrap().phase, DeepPhase::Confirm);
+
+    app.deep_execute();
+    wait_until_idle(&mut app);
+
+    assert!(matches!(
+        app.deep.as_ref().unwrap().phase,
+        DeepPhase::Done(_)
+    ));
+    assert!(
+        !temp.join("cache").exists(),
+        "the marked row should have run"
+    );
+}
+
+#[test]
+fn deep_hides_absent_rows_until_asked() {
+    use cleaner_core::sysclean::{Action, Tier};
+
+    let temp = TempDir::new("deep-absent");
+    let mut app = app_with_tree(&temp);
+
+    let mut present = candidate("present", Tier::Safe, Action::Remove(vec![temp.join("a")]));
+    present.present = true;
+    let mut absent = candidate("absent", Tier::Safe, Action::Remove(vec![temp.join("b")]));
+    absent.present = false;
+    app.deep = Some(deep_state_with(temp.path(), vec![present, absent]));
+
+    assert_eq!(
+        crate::app::visible_rows(app.deep.as_ref().unwrap()).len(),
+        1
+    );
+    app.deep_toggle_absent();
+    assert_eq!(
+        crate::app::visible_rows(app.deep.as_ref().unwrap()).len(),
+        2
+    );
+}
+
+#[test]
+fn deep_collapsing_a_section_hides_its_rows_but_keeps_marks() {
+    use cleaner_core::sysclean::{Action, Tier};
+
+    let temp = TempDir::new("deep-collapse");
+    let mut app = app_with_tree(&temp);
+    app.deep = Some(deep_state_with(
+        temp.path(),
+        vec![
+            candidate("one", Tier::Safe, Action::Remove(vec![temp.join("a")])),
+            candidate("two", Tier::Safe, Action::Remove(vec![temp.join("b")])),
+        ],
+    ));
+
+    let before = app.deep.as_ref().unwrap().marked_count();
+    app.deep_go_top();
+    app.deep_toggle_section(true);
+
+    assert!(crate::app::visible_rows(app.deep.as_ref().unwrap()).is_empty());
+    assert_eq!(
+        app.deep.as_ref().unwrap().marked_count(),
+        before,
+        "collapsing must not change what is marked"
+    );
+
+    app.deep_toggle_section(false);
+    assert_eq!(
+        crate::app::visible_rows(app.deep.as_ref().unwrap()).len(),
+        2
+    );
+}

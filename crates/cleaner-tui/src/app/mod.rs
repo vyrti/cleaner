@@ -1,13 +1,15 @@
 //! TUI Application state with threaded deletion and live UI feedback
 
 mod actions;
+mod deep;
 mod navigation;
 mod state;
 
 #[cfg(test)]
 mod tests;
 
-pub use state::{CleanState, DeleteState, RebuildState, SortMode};
+pub use deep::{visible_rows, DESTRUCTIVE_WORD};
+pub use state::{CleanState, DeepPhase, DeepState, DeleteState, RebuildState, SortMode};
 
 use cleaner_core::get_disk_usage;
 use cleaner_core::patterns::PatternMatcher;
@@ -31,6 +33,9 @@ pub struct App {
     pub disk_total: u64,
     pub disk_free: u64,
     pub force: bool,
+    /// `Some` while the Deep Clean view is open. The browser renders instead
+    /// when this is `None`.
+    pub deep: Option<DeepState>,
     matcher: Arc<PatternMatcher>,
     tree: Option<DirTree>,
     delete_state: Option<DeleteState>,
@@ -57,6 +62,7 @@ impl App {
             disk_total: 0,
             disk_free: 0,
             force,
+            deep: None,
             matcher,
             tree: None,
             delete_state: None,
@@ -87,6 +93,7 @@ impl App {
             disk_total: 0,
             disk_free: 0,
             force,
+            deep: None,
             matcher,
             tree: Some(tree),
             delete_state: None,
@@ -100,7 +107,15 @@ impl App {
 
     /// Check if currently deleting or cleaning
     pub fn is_busy(&self) -> bool {
-        self.delete_state.is_some() || self.clean_state.is_some() || self.rebuild_state.is_some()
+        self.delete_state.is_some()
+            || self.clean_state.is_some()
+            || self.rebuild_state.is_some()
+            || self.deep.as_ref().is_some_and(DeepState::is_busy)
+    }
+
+    /// True while the Deep Clean view is open.
+    pub fn in_deep(&self) -> bool {
+        self.deep.is_some()
     }
 
     /// Check if currently deleting
@@ -150,6 +165,17 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
+        if let Some(mut state) = self.deep.take() {
+            state
+                .cancelled
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            if let Some(handle) = state.probe_handle.take() {
+                let _ = handle.join();
+            }
+            if let Some(handle) = state.run_handle.take() {
+                let _ = handle.join();
+            }
+        }
         if let Some(state) = self.rebuild_state.take() {
             state
                 .cancelled

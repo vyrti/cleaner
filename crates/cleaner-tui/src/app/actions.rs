@@ -130,6 +130,7 @@ impl App {
 
     /// Check for completed deletion/clean and clear expired status
     pub fn tick(&mut self) {
+        self.tick_deep();
         // Check if deletion completed
         if let Some(state) = self.delete_state.take() {
             if state.handle.is_finished() {
